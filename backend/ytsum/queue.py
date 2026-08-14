@@ -8,7 +8,14 @@ from typing import Callable
 
 from .captions import parse_caption_file, transcript_markdown
 from .downloader import YouTubeClient
-from .models import AppSettings, JobRecord, SummaryVersion, TranscriptInfo, VideoMeta, utc_now
+from .models import (
+    AppSettings,
+    JobRecord,
+    SummaryVersion,
+    TranscriptInfo,
+    VideoMeta,
+    utc_now,
+)
 from .settings import SettingsRepository
 from .storage import LibraryStorage
 from .summarizer import Summarizer
@@ -30,7 +37,11 @@ def safe_component(value: str) -> str:
 
 
 class ProcessingQueue:
-    def __init__(self, settings_repo: SettingsRepository, storage_provider: Callable[[], LibraryStorage]) -> None:
+    def __init__(
+        self,
+        settings_repo: SettingsRepository,
+        storage_provider: Callable[[], LibraryStorage],
+    ) -> None:
         self.settings_repo = settings_repo
         self.storage_provider = storage_provider
         self.paused = False
@@ -90,7 +101,11 @@ class ProcessingQueue:
             raise JobCancelled("Cancelled by user")
 
     def _log(self, job: JobRecord, message: str) -> None:
-        message = re.sub(r"(?i)(authorization|api[_ -]?key|bearer)\s*[:=]\s*\S+", r"\1: [redacted]", message)
+        message = re.sub(
+            r"(?i)(authorization|api[_ -]?key|bearer)\s*[:=]\s*\S+",
+            r"\1: [redacted]",
+            message,
+        )
         job.log.append(f"{utc_now()} {message}")
         job = self.storage.update_job(job.id, log_json=job.log) or job
         self.storage.write_job_log(job)
@@ -110,13 +125,23 @@ class ProcessingQueue:
                 await self._prepare_transcript(job, settings, work_dir)
             self._check_cancelled(job)
             await self._create_summary(job, settings)
-            self.storage.update_job(job.id, status="complete", stage="complete", progress=1, error=None)
+            self.storage.update_job(
+                job.id, status="complete", stage="complete", progress=1, error=None
+            )
             self._log(job, "Job completed")
         except JobCancelled as error:
-            self.storage.update_job(job.id, status="cancelled", stage="cancelled", error=str(error))
+            self.storage.update_job(
+                job.id, status="cancelled", stage="cancelled", error=str(error)
+            )
             self._log(job, str(error))
         except Exception as error:
-            self.storage.update_job(job.id, status="attention", stage="attention", error=str(error), attempts=job.attempts + 1)
+            self.storage.update_job(
+                job.id,
+                status="attention",
+                stage="attention",
+                error=str(error),
+                attempts=job.attempts + 1,
+            )
             detail = self.storage.get_video(job.video_id)
             if detail and detail.folder:
                 detail.meta.status = "attention"
@@ -128,7 +153,9 @@ class ProcessingQueue:
             if work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
 
-    async def _prepare_transcript(self, job: JobRecord, settings: AppSettings, work_dir: Path) -> None:
+    async def _prepare_transcript(
+        self, job: JobRecord, settings: AppSettings, work_dir: Path
+    ) -> None:
         client = YouTubeClient(settings)
         self._stage(job, "metadata", 0.08)
         extracted = await asyncio.to_thread(client.extract, job.source_url)
@@ -162,17 +189,26 @@ class ProcessingQueue:
         self._stage(job, "transcript-selection", 0.22)
         choice = client.choose_transcript(extracted)
         if choice:
-            self._log(job, f"Selected {choice.kind} transcript language {choice.language}")
+            self._log(
+                job, f"Selected {choice.kind} transcript language {choice.language}"
+            )
             self._stage(job, "subtitle-download", 0.32)
-            caption_file = await asyncio.to_thread(client.download_subtitle, extracted, choice, work_dir)
+            caption_file = await asyncio.to_thread(
+                client.download_subtitle, extracted, choice, work_dir
+            )
             segments = parse_caption_file(caption_file)
             language = choice.language
             kind = choice.kind
             engine = None
         else:
-            self._log(job, "No usable YouTube transcript; switching to local audio transcription")
+            self._log(
+                job,
+                "No usable YouTube transcript; switching to local audio transcription",
+            )
             self._stage(job, "audio-download", 0.30)
-            audio_path = await asyncio.to_thread(client.download_audio, extracted, work_dir)
+            audio_path = await asyncio.to_thread(
+                client.download_audio, extracted, work_dir
+            )
             self._check_cancelled(job)
             self._stage(job, "transcribing", 0.50)
             segments = await MeetingTranscriberBridge(settings).transcribe(audio_path)
@@ -184,9 +220,18 @@ class ProcessingQueue:
 
         if not segments:
             raise RuntimeError("Transcript is empty")
-        markdown = transcript_markdown(video_id=meta.video_id, title=meta.title, language=language, kind=kind, engine=engine, segments=segments)
+        markdown = transcript_markdown(
+            video_id=meta.video_id,
+            title=meta.title,
+            language=language,
+            kind=kind,
+            engine=engine,
+            segments=segments,
+        )
         atomic_write(folder / "transcript.md", markdown)
-        meta.transcript = TranscriptInfo(language=language, kind=kind, engine=engine, segment_count=len(segments))
+        meta.transcript = TranscriptInfo(
+            language=language, kind=kind, engine=engine, segment_count=len(segments)
+        )
         meta.status = "transcript_ready"
         meta.error = None
         self.storage.save_meta(meta, folder)
@@ -199,20 +244,26 @@ class ProcessingQueue:
             raise RuntimeError("Transcript is not ready")
         overrides = job.overrides
         provider_id = overrides.get("provider_id") or settings.active_provider_id
-        provider = next((item for item in settings.providers if item.id == provider_id), None)
+        provider = next(
+            (item for item in settings.providers if item.id == provider_id), None
+        )
         if not provider:
             raise RuntimeError(f"Summary provider '{provider_id}' not found")
         model = overrides.get("model") or provider.model
         if not model:
             raise RuntimeError("Choose a summary model in Settings")
         template_id = overrides.get("template_id") or settings.summary_template_id
-        template = next((item for item in settings.templates if item.id == template_id), None)
+        template = next(
+            (item for item in settings.templates if item.id == template_id), None
+        )
         if not template:
             raise RuntimeError(f"Summary template '{template_id}' not found")
         language = overrides.get("language") or settings.summary_language
         mode = overrides.get("mode") or settings.summary_mode
         self._stage(job, "summarizing", 0.72)
-        result = await Summarizer(settings, provider, template).run(detail.transcript_markdown, language=language, model=model, mode=mode)
+        result = await Summarizer(settings, provider, template).run(
+            detail.transcript_markdown, language=language, model=model, mode=mode
+        )
         folder = Path(detail.folder)
         history_dir = folder / "summary-history"
         history_dir.mkdir(exist_ok=True)
@@ -223,10 +274,20 @@ class ProcessingQueue:
             previous.file = f"summary-history/{history_name}"
             detail.meta.summary_versions.append(previous)
         atomic_write(folder / "summary.md", result.markdown)
-        detail.meta.current_summary = SummaryVersion(file="summary.md", provider_id=provider.id, model=model, template_id=template.id, language=language, mode=mode)
+        detail.meta.current_summary = SummaryVersion(
+            file="summary.md",
+            provider_id=provider.id,
+            model=model,
+            template_id=template.id,
+            language=language,
+            mode=mode,
+        )
         detail.meta.summary_stale = False
         detail.meta.status = "complete"
         detail.meta.error = None
         self.storage.save_meta(detail.meta, folder)
         self.storage.update_search(job.video_id)
-        self._log(job, f"Summary created with {provider.name}/{model} in {result.request_count} request(s)")
+        self._log(
+            job,
+            f"Summary created with {provider.name}/{model} in {result.request_count} request(s)",
+        )
