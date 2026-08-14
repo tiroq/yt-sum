@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yt-sum"
+version = "0.1.0"
+description = "Local-first YouTube transcript and summarization library"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.11,<3",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "yt-dlp>=2026.7.4",
+]
+
+[project.optional-dependencies]
+cluster = [
+  "numpy>=2,<3",
+  "scikit-learn>=1.7,<2",
+  "sentence-transformers>=5,<6",
+]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+]
+
+[project.scripts]
+yt-sum-api = "ytsum.main:run"
+
+[tool.setuptools]
+package-dir = {"" = "backend"}
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+asyncio_mode = "auto"
+
