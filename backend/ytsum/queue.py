@@ -159,6 +159,7 @@ class ProcessingQueue:
         client = YouTubeClient(settings)
         self._stage(job, "metadata", 0.08)
         extracted = await asyncio.to_thread(client.extract, job.source_url)
+        self._log(job, f"Extracted: {extracted.title} ({extracted.duration_seconds}s)")
         self._check_cancelled(job)
         previous = self.storage.read_meta(job.video_id)
         meta = VideoMeta(
@@ -212,6 +213,7 @@ class ProcessingQueue:
             self._check_cancelled(job)
             self._stage(job, "transcribing", 0.50)
             segments = await MeetingTranscriberBridge(settings).transcribe(audio_path)
+            self._log(job, f"Transcribed {len(segments)} segments")
             language = settings.asr_language or extracted.original_language or "auto"
             kind = "local_asr"
             engine = settings.asr_engine
@@ -229,6 +231,7 @@ class ProcessingQueue:
             segments=segments,
         )
         atomic_write(folder / "transcript.md", markdown)
+        self._log(job, f"Transcript written: {len(markdown)} chars, {language}/{kind}")
         meta.transcript = TranscriptInfo(
             language=language, kind=kind, engine=engine, segment_count=len(segments)
         )
@@ -261,6 +264,7 @@ class ProcessingQueue:
         language = overrides.get("language") or settings.summary_language
         mode = overrides.get("mode") or settings.summary_mode
         self._stage(job, "summarizing", 0.72)
+        self._log(job, f"Starting summary: {provider.name}/{model} ({mode})")
         result = await Summarizer(settings, provider, template).run(
             detail.transcript_markdown, language=language, model=model, mode=mode
         )
