@@ -42,3 +42,4 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+backend/yt_sum.egg-info/*
