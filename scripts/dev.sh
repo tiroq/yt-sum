@@ -22,7 +22,14 @@ fi
 if ! .venv/bin/python -c 'import fastapi, yt_dlp' 2>/dev/null; then
   .venv/bin/python -m pip install -e '.[dev]'
 fi
-.venv/bin/uvicorn ytsum.api:app --host 127.0.0.1 --port 8765 &
+run_api() {
+  while true; do
+    YTSUM_RESTART_ALLOWED=1 .venv/bin/uvicorn ytsum.api:app --host 127.0.0.1 --port 8765
+    echo "YT Sum API stopped; restarting in one second."
+    sleep 1
+  done
+}
+run_api &
 api_pid=$!
 
 cleanup() {
