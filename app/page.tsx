@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { shouldApplySettingsRefresh } from "./settings-refresh";
 
 const API = process.env.NEXT_PUBLIC_YTSUM_API_URL ?? "http://127.0.0.1:8765/api";
 
@@ -209,7 +210,7 @@ export default function Home() {
       setVideos(videoPayload.items);
       setJobs(jobPayload.items);
       setSettings(settingsPayload);
-      setHealth(healthPayload);
+      if (shouldApplySettingsRefresh(settingsDirtyRef.current)) setSettings(settingsPayload);
       setOnline(true);
       setSelectedId((current) => current ?? videoPayload.items[0]?.video_id ?? null);
     } catch (cause) {
@@ -217,6 +218,16 @@ export default function Home() {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [query]);
+
+  const updateSettings = useCallback((value: Settings) => {
+    settingsDirtyRef.current = true;
+    setSettings(value);
+  }, []);
+
+  const refreshSavedSettings = useCallback(async () => {
+    settingsDirtyRef.current = false;
+    await refresh();
+  }, [refresh]);
 
   const refreshDetail = useCallback(async (videoId: string | null) => {
     if (!videoId) {
@@ -350,9 +361,9 @@ export default function Home() {
         </header>
 
         {!online ? <OfflineState message={error || t.offline} onRetry={refresh} language={language} /> : view === "settings" && settings ? (
-          <SettingsView settings={settings} setSettings={setSettings} onSaved={refresh} language={language} />
-        ) : view === "status" && health ? (
-          <SystemStatus health={health} settings={settings} language={language} onRescan={async () => { await request("/library/rescan", { method: "POST" }); await refresh(); }} />
+          <SettingsView settings={settings} setSettings={updateSettings} onSaved={refreshSavedSettings} language={language} />
+        ) : view === "status" ? (
+          <><SystemStatus health={health} settings={settings} language={language} onRescan={async () => { await request("/library/rescan", { method: "POST" }); await refresh(); }} /><SourceUpdatePanel language={language} /></>
         ) : detail ? (
           <>
             <section className="video-hero">
