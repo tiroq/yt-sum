@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "YT Sum Queue",
+  "version": "0.1.0",
+  "description": "Adds the current YouTube video to a local YT Sum queue.",
+  "permissions": ["activeTab", "storage", "notifications"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "action": { "default_title": "Add video to YT Sum" },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_page": "options.html"
+}
