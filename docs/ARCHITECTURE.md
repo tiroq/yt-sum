@@ -7,7 +7,8 @@ Browser (127.0.0.1:3000)
        │ JSON/HTTP
        ▼
 Python API (127.0.0.1:8765)
-       ├── persistent single-worker queue
+       ├── persistent download/transcription queue
+       ├── concurrent LLM worker pool
        ├── yt-dlp + ffmpeg
        ├── transcript selector/parser
        ├── summary provider adapters
@@ -28,7 +29,7 @@ The frontend is intentionally replaceable and does not own durable data. The Pyt
 - `transcriber.py`: Meeting Transcriber automation API adapter and transcript parsing.
 - `providers.py`: Ollama/OpenAI-compatible model discovery and chat calls, Keychain access, RPM limiting.
 - `summarizer.py`: complete map-reduce pipeline and optional lossy clustering pipeline.
-- `queue.py`: durable sequential job state machine, retries, cancellation, partial results, logging.
+- `queue.py`: durable download/transcription lane plus concurrent LLM lane, retries, cancellation, partial results, logging.
 
 ## Job state machine
 
@@ -40,7 +41,7 @@ transcript-ready → summarizing → complete
                         └────────→ attention-required
 ```
 
-Every transition is persisted. On restart, interrupted jobs return to `queued`; existing transcript files allow the worker to resume at summarization rather than contacting YouTube again.
+Every transition is persisted. Download/transcription jobs are claimed only by the sequential acquisition worker. Summary, prompt, and speech jobs are claimed by the LLM worker pool. The pool size follows enabled model endpoints, while the shared least-loaded provider scheduler distributes concurrent requests across endpoints and each endpoint's RPM limiter remains authoritative. On restart, interrupted jobs return to `queued`; existing transcript files allow the worker to resume at summarization rather than contacting YouTube again.
 
 ## Security model
 
@@ -54,4 +55,3 @@ Every transition is persisted. On restart, interrupted jobs return to `queued`; 
 ## Replaceable native bridge
 
 `NativeTranscriber` consumes an audio path and returns timestamped segments. Its initial adapter uses Meeting Transcriber's stable `/v1/transcribe?include=transcript` API and bearer token. This preserves the agreed WhisperKit/Parakeet/CoreML implementation while keeping engine-specific Swift code outside the Python process. A future bundled helper only needs to implement the same adapter contract.
-
