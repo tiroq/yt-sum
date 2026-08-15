@@ -32,6 +32,14 @@ start:
 stop:
     @bash ./scripts/stop.sh
 
+# Stop the local application through the backend API; falls back to process-tree stop.
+api-stop:
+    @curl -fsS -X POST http://127.0.0.1:8765/api/system/shutdown || bash ./scripts/stop.sh
+
+# Restart only the backend API process. The dev supervisor starts it again.
+api-restart:
+    @curl -fsS -X POST http://127.0.0.1:8765/api/system/restart
+
 # Restart the local web application and API.
 restart: stop start
 

@@ -46,6 +46,14 @@ def context() -> ApplicationContext:
     return _context
 
 
+def schedule_process_signal(pid: int, sig: signal.Signals, delay: float = 0.25) -> None:
+    async def signal_after_response() -> None:
+        await asyncio.sleep(delay)
+        os.kill(pid, sig)
+
+    asyncio.create_task(signal_after_response())
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     app_context = context()
@@ -574,10 +582,14 @@ async def pull_source() -> dict:
 async def restart_application() -> dict:
     if os.environ.get("YTSUM_RESTART_ALLOWED") != "1":
         raise HTTPException(409, "Restart is available only when the app is started with scripts/dev.sh.")
-
-    async def stop_after_response() -> None:
-        await asyncio.sleep(0.25)
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    asyncio.create_task(stop_after_response())
+    schedule_process_signal(os.getpid(), signal.SIGTERM)
     return {"restarting": True, "message": "The API is stopping now; its supervisor will start it again."}
+
+
+@app.post("/api/system/shutdown")
+async def shutdown_application() -> dict:
+    if os.environ.get("YTSUM_SHUTDOWN_ALLOWED") != "1":
+        raise HTTPException(409, "Shutdown is available only when the app is started with scripts/dev.sh.")
+    supervisor_pid = int(os.environ.get("YTSUM_SUPERVISOR_PID") or os.getpid())
+    schedule_process_signal(supervisor_pid, signal.SIGTERM)
+    return {"shutting_down": True, "message": "The local application is stopping now."}

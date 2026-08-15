@@ -1,4 +1,5 @@
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 
@@ -150,6 +151,40 @@ def test_provider_pool_settings_persist_and_expose_status(monkeypatch, tmp_path:
         statuses = client.get("/api/providers/status").json()["items"]
         assert {item["id"] for item in statuses} >= {"ollama", "openai-compatible"}
         assert all("requests_in_window" in item and "in_flight" in item for item in statuses)
+
+
+def test_system_restart_requires_dev_supervisor(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    monkeypatch.delenv("YTSUM_RESTART_ALLOWED", raising=False)
+
+    from ytsum import api
+
+    api._context = None
+    with TestClient(api.app) as client:
+        assert client.post("/api/system/restart").status_code == 409
+
+
+def test_system_shutdown_signals_supervisor_after_response(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    monkeypatch.setenv("YTSUM_SHUTDOWN_ALLOWED", "1")
+    monkeypatch.setenv("YTSUM_SUPERVISOR_PID", "4242")
+
+    from ytsum import api
+
+    scheduled = []
+
+    def fake_schedule(pid: int, sig: signal.Signals, delay: float = 0.25) -> None:
+        scheduled.append((pid, sig, delay))
+
+    monkeypatch.setattr(api, "schedule_process_signal", fake_schedule)
+    api._context = None
+    with TestClient(api.app) as client:
+        payload = client.post("/api/system/shutdown").json()
+
+    assert payload["shutting_down"] is True
+    assert scheduled == [(4242, signal.SIGTERM, 0.25)]
 
 
 def test_removed_default_provider_stays_removed(monkeypatch, tmp_path: Path) -> None:

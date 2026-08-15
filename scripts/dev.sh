@@ -24,7 +24,7 @@ if ! .venv/bin/python -c 'import fastapi, yt_dlp' 2>/dev/null; then
 fi
 run_api() {
   while true; do
-    YTSUM_RESTART_ALLOWED=1 .venv/bin/uvicorn ytsum.api:app --host 127.0.0.1 --port 8765
+    YTSUM_RESTART_ALLOWED=1 YTSUM_SHUTDOWN_ALLOWED=1 YTSUM_SUPERVISOR_PID=$$ .venv/bin/uvicorn ytsum.api:app --host 127.0.0.1 --port 8765
     echo "YT Sum API stopped; restarting in one second."
     sleep 1
   done
@@ -32,9 +32,25 @@ run_api() {
 run_api &
 api_pid=$!
 
+npm run dev &
+web_pid=$!
+
+stop_tree() {
+  local parent="$1"
+  local child
+  while read -r child; do
+    [[ -n "$child" ]] || continue
+    stop_tree "$child"
+  done < <(pgrep -P "$parent" 2>/dev/null || true)
+  kill -TERM "$parent" 2>/dev/null || true
+}
+
 cleanup() {
-  kill "$api_pid" 2>/dev/null || true
+  stop_tree "$api_pid"
+  stop_tree "$web_pid"
 }
 trap cleanup EXIT INT TERM
 
-npm run dev
+while kill -0 "$api_pid" 2>/dev/null && kill -0 "$web_pid" 2>/dev/null; do
+  sleep 1
+done
