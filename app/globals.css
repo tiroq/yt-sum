@@ -287,6 +287,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .health-card h3 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .health-card p { margin: 4px 0 0; color: var(--muted); font-size: 9px; }
 .health-card code { grid-column: 2; color: #89928d; font-size: 8px; }
+.queue-diagnostics { max-width: 1180px; margin: 0 auto 18px; padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
+.section-heading, .queue-diagnostic-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-heading h2 { margin: 4px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 21px; }
+.queue-global-state, .queue-diagnostic-title span { color: var(--muted); font-size: 11px; }
+.queue-diagnostics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.queue-diagnostic-card { padding: 14px; border: 1px solid var(--line-soft); border-radius: 12px; background: #fbfaf6; }
+.queue-diagnostic-title h3 { margin: 0; font-size: 13px; }
+.queue-stat-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.queue-stat-grid div { display: grid; gap: 3px; }
+.queue-stat-grid strong { font-size: 20px; }
+.queue-stat-grid small { color: var(--muted); font-size: 9px; }
+.queue-current-stage { margin: 13px 0 0; color: var(--muted); font-size: 11px; }
 .status-info { max-width: 1180px; }
 .toast { position: fixed; z-index: 70; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: min(600px, calc(100vw - 30px)); display: flex; align-items: center; gap: 9px; padding: 11px 13px; color: #8d332d; background: #fff3f1; border: 1px solid #efc9c4; border-radius: 11px; box-shadow: var(--shadow); font-size: 11px; }
 .toast span { white-space: pre-wrap; }
@@ -325,6 +337,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .document-actions { justify-content: flex-start; }
   .markdown { font-size: 15px; }
   .details-grid, .settings-layout { grid-template-columns: 1fr; }
+  .queue-diagnostics-grid { grid-template-columns: 1fr; }
+  .queue-stat-grid { grid-template-columns: repeat(5, minmax(45px, 1fr)); }
   .settings-card.wide { grid-column: auto; }
   .settings-page, .status-page { padding: 24px 13px 60px; }
   .page-heading { align-items: flex-end; }
