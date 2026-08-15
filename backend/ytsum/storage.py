@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from .models import JobRecord, VideoDetail, VideoMeta, utc_now
+from .models import JobRecord, PlaylistMeta, PlaylistRef, PromptArtifact, VideoDetail, VideoMeta, utc_now
 
 
 INVALID_FILENAME = re.compile(r"[\\/:*?\"<>|\x00-\x1f]")
@@ -91,6 +91,13 @@ class LibraryStorage:
                 updated_at TEXT NOT NULL,
                 error TEXT,
                 log_json TEXT NOT NULL DEFAULT '[]',
+                stage_log_json TEXT NOT NULL DEFAULT '[]',
+                requests_planned INTEGER NOT NULL DEFAULT 0,
+                requests_completed INTEGER NOT NULL DEFAULT 0,
+                summary_source TEXT,
+                provider_id TEXT,
+                provider_name TEXT,
+                model TEXT,
                 overrides_json TEXT NOT NULL DEFAULT '{}'
             )
             """,
@@ -122,17 +129,52 @@ class LibraryStorage:
             connection.execute("UPDATE jobs SET status='queued', stage='queued' WHERE status='processing'")
             connection.execute("PRAGMA optimize")
 
-    def create_placeholder(self, video_id: str, source_url: str) -> None:
+    def create_placeholder(self, video_id: str, source_url: str, playlists: list[PlaylistRef] | None = None) -> None:
         now = utc_now()
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO videos(video_id, source_url, title, status, added_at, updated_at)
-                VALUES (?, ?, ?, 'queued', ?, ?)
+                INSERT INTO videos(video_id, source_url, title, status, playlists_json, added_at, updated_at)
+                VALUES (?, ?, ?, 'queued', ?, ?, ?)
                 ON CONFLICT(video_id) DO NOTHING
                 """,
-                (video_id, source_url, "Ожидает метаданные", now, now),
+                (video_id, source_url, "Ожидает метаданные", json.dumps([item.model_dump(mode="json") for item in playlists or []], ensure_ascii=False), now, now),
             )
+
+    def import_playlist(self, playlist: PlaylistMeta, entries: list[tuple[str, str, int]]) -> tuple[list[JobRecord], list[str]]:
+        """Import every distinct playlist entry while retaining playlist membership."""
+        jobs: list[JobRecord] = []
+        existing: list[str] = []
+        now = utc_now()
+        with self._connect() as connection:
+            next_position = connection.execute("SELECT COALESCE(MAX(position), 0) FROM jobs WHERE status='queued'").fetchone()[0]
+            for video_id, source_url, position in entries:
+                ref = PlaylistRef(id=playlist.id, title=playlist.title, source_url=playlist.source_url, position=position)
+                row = connection.execute("SELECT playlists_json FROM videos WHERE video_id=?", (video_id,)).fetchone()
+                if row:
+                    refs = [PlaylistRef.model_validate(value) for value in json.loads(row["playlists_json"] or "[]")]
+                    refs = [item for item in refs if item.id != playlist.id] + [ref]
+                    connection.execute("UPDATE videos SET playlists_json=?, updated_at=? WHERE video_id=?", (json.dumps([item.model_dump(mode="json") for item in refs], ensure_ascii=False), now, video_id))
+                    existing.append(video_id)
+                    continue
+                connection.execute("INSERT INTO videos(video_id, source_url, title, status, playlists_json, added_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)", (video_id, source_url, "Ожидает метаданные", json.dumps([ref.model_dump(mode="json")], ensure_ascii=False), now, now))
+                next_position += 1
+                job = JobRecord(id=str(uuid.uuid4()), video_id=video_id, source_url=source_url, position=next_position)
+                connection.execute("INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job.id, job.video_id, job.source_url, job.kind, job.status, job.stage, job.progress, job.position, job.attempts, job.created_at, job.updated_at, job.error, json.dumps(job.log), json.dumps(job.stage_log), job.requests_planned, job.requests_completed, job.summary_source, job.provider_id, job.provider_name, job.model, json.dumps(job.overrides)))
+                jobs.append(job)
+        return jobs, existing
+
+    def list_playlists(self) -> list[dict[str, Any]]:
+        playlists: dict[str, dict[str, Any]] = {}
+        with self._connect() as connection:
+            rows = connection.execute("SELECT video_id, playlists_json FROM videos").fetchall()
+        for row in rows:
+            for payload in json.loads(row["playlists_json"] or "[]"):
+                ref = PlaylistRef.model_validate(payload)
+                item = playlists.setdefault(ref.id, {**ref.model_dump(mode="json"), "video_count": 0, "video_ids": []})
+                item["video_count"] += 1
+                item["video_ids"].append(row["video_id"])
+        return sorted(playlists.values(), key=lambda item: item["title"].casefold())
 
     def video_exists(self, video_id: str) -> bool:
         with self._connect() as connection:
@@ -201,6 +243,7 @@ class LibraryStorage:
                     json.dumps(meta.tags, ensure_ascii=False),
                     meta.transcript.language if meta.transcript else None,
                     meta.transcript.kind if meta.transcript else None,
+                    json.dumps([item.model_dump(mode="json") for item in meta.playlists], ensure_ascii=False),
                     meta.added_at, meta.updated_at, meta.error,
                 ),
             )
@@ -219,9 +262,20 @@ class LibraryStorage:
         stored = self.read_meta(video_id)
         if stored:
             meta, folder = stored
-            transcript = (folder / "transcript.md").read_text(encoding="utf-8") if (folder / "transcript.md").exists() else ""
+            transcript_files = [item.file for item in meta.transcripts if item.file]
+            if not transcript_files and (folder / "transcript.md").exists():
+                transcript_files = ["transcript.md"]
+            transcript_markdowns = {
+                filename: (folder / filename).read_text(encoding="utf-8")
+                for filename in transcript_files
+                if (folder / filename).is_file()
+            }
+            transcript = transcript_markdowns.get(meta.transcript.file if meta.transcript else "", "")
+            if not transcript:
+                transcript = next(iter(transcript_markdowns.values()), "")
             summary = (folder / "summary.md").read_text(encoding="utf-8") if (folder / "summary.md").exists() else ""
-            return VideoDetail(meta=meta, transcript_markdown=transcript, summary_markdown=summary, folder=str(folder))
+            artifacts = [item for item in meta.prompt_artifacts if (folder / item.file).is_file()]
+            return VideoDetail(meta=meta, transcript_markdown=transcript, transcript_markdowns=transcript_markdowns, summary_markdown=summary, prompt_artifacts=artifacts, folder=str(folder))
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
         if not row:
@@ -292,9 +346,27 @@ class LibraryStorage:
         if not stored:
             return None
         meta, folder = stored
-        transcript_path = folder / "transcript.md"
+        transcript_files = [item.file for item in meta.transcripts if item.file]
+        if not transcript_files and (folder / "transcript.md").exists():
+            transcript_files = ["transcript.md"]
+        transcript_markdowns = {filename: (folder / filename).read_text(encoding="utf-8") for filename in transcript_files if (folder / filename).is_file()}
         summary_path = folder / "summary.md"
-        return VideoDetail(meta=meta, transcript_markdown=transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else "", summary_markdown=summary_path.read_text(encoding="utf-8") if summary_path.exists() else "", folder=str(folder))
+        transcript = transcript_markdowns.get(meta.transcript.file if meta.transcript else "", next(iter(transcript_markdowns.values()), ""))
+        artifacts = [item for item in meta.prompt_artifacts if (folder / item.file).is_file()]
+        return VideoDetail(meta=meta, transcript_markdown=transcript, transcript_markdowns=transcript_markdowns, summary_markdown=summary_path.read_text(encoding="utf-8") if summary_path.exists() else "", prompt_artifacts=artifacts, folder=str(folder))
+
+    def read_prompt_artifact(self, video_id: str, artifact_id: str) -> tuple[PromptArtifact, str] | None:
+        stored = self.read_meta(video_id)
+        if not stored:
+            return None
+        meta, folder = stored
+        artifact = next((item for item in meta.prompt_artifacts if item.id == artifact_id), None)
+        if not artifact:
+            return None
+        path = folder / artifact.file
+        if not path.is_file() or path.parent.resolve().parent != folder.resolve():
+            return None
+        return artifact, path.read_text(encoding="utf-8")
 
     def rescan(self) -> int:
         count = 0
@@ -336,8 +408,17 @@ class LibraryStorage:
             next_position = connection.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM jobs WHERE status='queued'").fetchone()[0]
             job = JobRecord(id=str(uuid.uuid4()), video_id=video_id, source_url=source_url, kind=kind, position=next_position, overrides=overrides or {})
             connection.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (job.id, job.video_id, job.source_url, job.kind, job.status, job.stage, job.progress, job.position, job.attempts, job.created_at, job.updated_at, job.error, json.dumps(job.log), json.dumps(job.overrides)),
+                """INSERT INTO jobs (
+                    id, video_id, source_url, kind, status, stage, progress, position,
+                    attempts, created_at, updated_at, error, log_json, stage_log_json,
+                    requests_planned, requests_completed, summary_source, provider_id,
+                    provider_name, model, overrides_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job.id, job.video_id, job.source_url, job.kind, job.status, job.stage,
+                 job.progress, job.position, job.attempts, job.created_at, job.updated_at,
+                 job.error, json.dumps(job.log), json.dumps([]), job.requests_planned,
+                 job.requests_completed, job.summary_source, job.provider_id,
+                 job.provider_name, job.model, json.dumps(job.overrides)),
             )
         return job
 
@@ -346,9 +427,16 @@ class LibraryStorage:
             rows = connection.execute("SELECT * FROM jobs ORDER BY CASE WHEN status='processing' THEN 0 WHEN status='queued' THEN 1 ELSE 2 END, position, updated_at DESC LIMIT ?", (limit,)).fetchall()
         return [self._row_to_job(row) for row in rows]
 
-    def next_job(self) -> JobRecord | None:
+    def next_job(self, kinds: tuple[str, ...] | None = None) -> JobRecord | None:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY position LIMIT 1").fetchone()
+            if kinds:
+                placeholders = ",".join("?" for _ in kinds)
+                row = connection.execute(
+                    f"SELECT * FROM jobs WHERE status='queued' AND kind IN ({placeholders}) ORDER BY position LIMIT 1",
+                    kinds,
+                ).fetchone()
+            else:
+                row = connection.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY position LIMIT 1").fetchone()
             if not row:
                 return None
             connection.execute("UPDATE jobs SET status='processing', stage='starting', updated_at=? WHERE id=?", (utc_now(), row["id"]))
@@ -360,8 +448,28 @@ class LibraryStorage:
             row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return self._row_to_job(row) if row else None
 
+    def delete_finished_job(self, job_id: str) -> bool | None:
+        """Delete one terminal history record, never a video's artifacts.
+
+        ``None`` distinguishes an active job from a job that no longer exists,
+        so the API can return a useful conflict response instead of racing the
+        worker and removing a record it is still updating.
+        """
+        with self._connect() as connection:
+            row = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                return False
+            if row["status"] not in {"complete", "attention"}:
+                return None
+            connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+        # Job logs are internal diagnostic data, not video artifacts.  Keep
+        # failure-to-clean-up non-fatal: the history record is already gone.
+        (self.logs_dir / f"{job_id}.log").unlink(missing_ok=True)
+        return True
+
     def update_job(self, job_id: str, **changes: Any) -> JobRecord | None:
-        allowed = {"status", "stage", "progress", "position", "attempts", "error", "log_json", "overrides_json"}
+        allowed = {"status", "stage", "progress", "position", "attempts", "error", "log_json", "stage_log_json", "requests_planned", "requests_completed", "summary_source", "provider_id", "provider_name", "model", "overrides_json"}
         columns = []
         values = []
         for key, value in changes.items():
