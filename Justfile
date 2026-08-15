@@ -24,6 +24,23 @@ test:
 build:
     npm run build
 
+# Reset only the SQLite index after making a recoverable backup.
+# Video folders, transcripts, summaries, and .meta.json files are preserved;
+# the application will rebuild the index during its next startup/rescan.
+# This is intentionally opt-in because it removes queue and history records.
+db-clean confirm="":
+    @test "{{confirm}}" = "RESET" || test "{{confirm}}" = "confirm=RESET" || { echo 'Refusing to clean the database. Run: just db-clean confirm=RESET' >&2; exit 2; }
+    @db_dir="$(.venv/bin/python -c 'import sys; from pathlib import Path; sys.path.insert(0, "backend"); from ytsum.settings import SettingsRepository; print(Path(SettingsRepository().load().library_dir).expanduser())')"; \
+    db_path="$db_dir/.yt-sum/index.sqlite3"; \
+    test -f "$db_path" || { echo "Database not found: $db_path" >&2; exit 1; }; \
+    backup_dir="$db_dir/.yt-sum/backups/db-$(date -u +%Y%m%dT%H%M%SZ)"; \
+    mkdir -p "$backup_dir"; \
+    cp -p "$db_path" "$backup_dir/index.sqlite3"; \
+    test ! -e "$db_path-wal" || cp -p "$db_path-wal" "$backup_dir/index.sqlite3-wal"; \
+    test ! -e "$db_path-shm" || cp -p "$db_path-shm" "$backup_dir/index.sqlite3-shm"; \
+    rm -f "$db_path" "$db_path-wal" "$db_path-shm"; \
+    echo "Database reset. Backup: $backup_dir"
+
 # Run all release gates in a deterministic order.
 verify: check test build version-check
 
