@@ -24,6 +24,17 @@ test:
 build:
     npm run build
 
+# Start the local web application and API in the background.
+start:
+    @bash ./scripts/start.sh
+
+# Stop only the local application process tree started by `just start`.
+stop:
+    @bash ./scripts/stop.sh
+
+# Restart the local web application and API.
+restart: stop start
+
 # Reset only the SQLite index after making a recoverable backup.
 # Video folders, transcripts, summaries, and .meta.json files are preserved;
 # the application will rebuild the index during its next startup/rescan.
