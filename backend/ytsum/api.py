@@ -6,14 +6,16 @@ import signal
 import subprocess
 import sys
 import asyncio
+import json
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
 import yt_dlp.version
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .context import ApplicationContext
 from .downloader import YouTubeClient, is_playlist_url, normalize_youtube_url
@@ -69,16 +71,21 @@ async def health() -> dict:
     settings = context().settings_repo.load()
     native_status = await MeetingTranscriberBridge(settings).health()
     cookie_file = Path(settings.cookie_file).expanduser() if settings.cookie_file else None
-    jobs = context().storage().list_jobs()
+    jobs = context().storage().list_jobs(limit=1_000_000)
 
     def queue_summary(kinds: set[str]) -> dict:
         lane = [job for job in jobs if job.kind in kinds]
-        active = [job for job in lane if job.status == "processing"]
-        queued = [job for job in lane if job.status == "queued"]
+        active = [job for job in lane if job.execution_state == "running"]
+        waiting = [job for job in lane if job.execution_state in {"waiting_resource", "retry_scheduled"}]
+        queued = [job for job in lane if job.execution_state == "queued"]
+        blocked = [job for job in lane if job.execution_state == "blocked"]
         return {
             "total": len(lane),
             "queued": len(queued),
             "processing": len(active),
+            "running": len(active),
+            "waiting": len(waiting),
+            "blocked": len(blocked),
             "completed": sum(job.status == "complete" for job in lane),
             "failed": sum(job.status == "attention" for job in lane),
             "cancelled": sum(job.status == "cancelled" for job in lane),
@@ -86,32 +93,40 @@ async def health() -> dict:
             "current_video_id": active[0].video_id if active else None,
             "current_progress": active[0].progress if active else None,
         }
-    pipeline_stage_names = (
-        "queued", "metadata", "thumbnail", "transcript-selection", "subtitle-download",
-        "audio-download", "transcribing", "transcript-ready", "summarizing", "summary-map",
-        "summary-reduce", "summary-final", "running-prompt", "speech-synthesis", "saving-audio",
-        "complete", "attention", "cancelled",
-    )
-    pipeline = []
-    for stage in pipeline_stage_names:
-        stage_jobs = [job for job in jobs if job.stage == stage]
-        pipeline.append({
-            "id": stage,
-            "count": len(stage_jobs),
-            "queued": sum(job.status == "queued" for job in stage_jobs),
-            "processing": sum(job.status == "processing" for job in stage_jobs),
-            "failed": sum(job.status == "attention" for job in stage_jobs),
-            "completed": sum(job.status == "complete" for job in stage_jobs),
-            "video_ids": [job.video_id for job in stage_jobs[:12]],
+    pipeline = context().storage().pipeline_aggregates()
+    for node in pipeline:
+        node["processing"] = node["running"]
+        node["completed"] = node["succeeded"]
+    resources = [item.model_dump(mode="json") for item in context().queue.resources.snapshots()]
+    for provider, provider_status in zip(settings.providers, ProviderClient.statuses(settings.providers)):
+        resources.append({
+            "id": f"llm:{provider.id}",
+            "label": f"{provider.name} / {provider.model or 'model not selected'}",
+            "capacity": provider.max_in_flight,
+            "in_use": provider_status["in_flight"],
+            "waiting": provider_status["waiting"] + provider_status["concurrency_waiting"],
+            "health": "degraded" if provider_status["health"] == "cooldown" else provider_status["health"],
+            "owners": [],
+            "requests_per_minute": provider_status["requests_per_minute"],
+            "requests_in_window": provider_status["requests_in_window"],
+            "retry_after_seconds": provider_status["retry_after_seconds"],
+            "cooldown_seconds": provider_status["cooldown_seconds"],
+            "completed": provider_status["completed"],
+            "failed": provider_status["failed"],
+            "last_error": provider_status["last_error"],
         })
     return {
         "status": "ok",
         "queue_paused": context().queue.paused,
         "queues": {
             "download": queue_summary({"process", "refresh"}),
-            "llm": queue_summary({"summarize", "prompt", "tts"}),
+            "llm": queue_summary({"summarize", "prompt"}),
+            "tts": queue_summary({"tts"}),
         },
         "pipeline": pipeline,
+        "stage_tasks": [item.model_dump(mode="json") for item in context().storage().list_stage_tasks(live_only=True)],
+        "resources": resources,
+        "cursor": context().storage().pipeline_cursor(),
         "library": str(context().storage().library_dir),
         "components": {
             "yt_dlp": {"ready": True, "version": yt_dlp.version.__version__},
@@ -120,6 +135,72 @@ async def health() -> dict:
             "text_to_speech": {"ready": MacSayTTS(settings).ready(), "engine": settings.tts_engine},
             "cookies": {"ready": bool((cookie_file and cookie_file.exists()) or settings.cookie_browser), "browser": settings.cookie_browser or None},
         },
+    }
+
+
+@app.get("/api/diagnostics/snapshot")
+async def diagnostics_snapshot() -> dict:
+    """Return a versioned full live snapshot independent of list pagination."""
+    payload = await health()
+    storage = context().storage()
+    payload["stage_tasks"] = [
+        item.model_dump(mode="json") for item in storage.list_stage_tasks(live_only=True)
+    ]
+    payload["workflows"] = [
+        item.model_dump(mode="json") for item in storage.list_workflows(limit=200)
+    ]
+    payload["cursor"] = storage.pipeline_cursor()
+    return payload
+
+
+@app.get("/api/diagnostics/events")
+def diagnostics_events(after: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=2000)) -> dict:
+    storage = context().storage()
+    items = storage.list_pipeline_events(after=after, limit=limit)
+    return {
+        "items": [item.model_dump(mode="json") for item in items],
+        "cursor": items[-1].sequence if items else storage.pipeline_cursor(),
+    }
+
+
+@app.get("/api/diagnostics/stream")
+async def diagnostics_stream(request: Request, after: int = Query(0, ge=0)) -> StreamingResponse:
+    async def events():
+        cursor = after
+        # Rotate the stream regularly so a graceful application restart never
+        # waits indefinitely for long-lived browser connections to close.
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline:
+            if await request.is_disconnected():
+                return
+            items = context().storage().list_pipeline_events(after=cursor, limit=200)
+            if items:
+                for item in items:
+                    cursor = item.sequence
+                    data = json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
+                    yield f"id: {cursor}\nevent: pipeline\ndata: {data}\n\n"
+            else:
+                yield f"event: heartbeat\ndata: {{\"cursor\": {cursor}}}\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/workflows/{workflow_id}")
+def get_workflow(workflow_id: str) -> dict:
+    storage = context().storage()
+    workflow = storage.get_workflow(workflow_id)
+    if not workflow:
+        raise HTTPException(404, "Workflow not found")
+    return {
+        "workflow": workflow.model_dump(mode="json"),
+        "tasks": [item.model_dump(mode="json") for item in storage.list_stage_tasks(workflow_id=workflow_id)],
+        "attempts": storage.list_attempts(workflow_id),
+        "events": [item.model_dump(mode="json") for item in storage.list_pipeline_events(workflow_id=workflow_id, limit=1000)],
     }
 
 
@@ -140,7 +221,7 @@ def list_playlists() -> dict:
 
 
 @app.post("/api/videos", status_code=202)
-def add_videos(request: AddVideosRequest) -> dict:
+async def add_videos(request: AddVideosRequest) -> dict:
     jobs = []
     existing = []
     errors = []
@@ -148,7 +229,12 @@ def add_videos(request: AddVideosRequest) -> dict:
     for raw_url in request.urls:
         if is_playlist_url(raw_url):
             try:
-                playlist = YouTubeClient(context().settings_repo.load()).extract_playlist(raw_url)
+                owner_id = f"playlist:{uuid.uuid4()}"
+                async with context().queue.resources.external("yt_dlp", owner_id, "playlist-inventory"):
+                    playlist = await context().queue._thread_call(
+                        YouTubeClient(context().settings_repo.load()).extract_playlist,
+                        raw_url,
+                    )
                 added, already_present = context().storage().import_playlist(
                     playlist.meta,
                     [(entry.video_id, entry.source_url, entry.position) for entry in playlist.entries],
@@ -170,7 +256,8 @@ def add_videos(request: AddVideosRequest) -> dict:
             existing.append(video_id)
             continue
         context().storage().create_placeholder(video_id, url)
-        jobs.append(context().storage().enqueue(video_id, url).model_dump(mode="json"))
+        snapshot = context().settings_repo.load().model_dump(mode="json")
+        jobs.append(context().storage().enqueue(video_id, url, settings_snapshot=snapshot).model_dump(mode="json"))
     context().queue.notify()
     return {"jobs": jobs, "existing": existing, "errors": errors}
 
@@ -234,7 +321,7 @@ def refresh_video(video_id: str) -> dict:
     detail = context().storage().get_video(video_id)
     if not detail:
         raise HTTPException(404, "Video not found")
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="refresh")
+    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="refresh", settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -245,7 +332,7 @@ def create_summary(video_id: str, request: CreateSummaryRequest) -> dict:
     if not detail or not detail.transcript_markdown:
         raise HTTPException(409, "Transcript is not ready")
     overrides = {key: value for key, value in request.model_dump().items() if value is not None}
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="summarize", overrides=overrides)
+    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="summarize", overrides=overrides, settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -258,7 +345,7 @@ def create_prompt(video_id: str, request: CreatePromptRequest) -> dict:
     if not any(item.id == request.template_id for item in context().settings_repo.load().templates):
         raise HTTPException(404, "Prompt template not found")
     overrides = {key: value for key, value in request.model_dump().items() if value is not None}
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="prompt", overrides=overrides)
+    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="prompt", overrides=overrides, settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -280,7 +367,7 @@ def create_speech(video_id: str, request: CreateSpeechRequest) -> dict:
     markdown = detail.transcript_markdown if request.artifact == "transcript" else detail.summary_markdown
     if not markdown.strip():
         raise HTTPException(409, f"{request.artifact.capitalize()} is not ready")
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="tts", overrides={"artifact": request.artifact})
+    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="tts", overrides={"artifact": request.artifact}, settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -346,10 +433,13 @@ def stop_jobs() -> dict:
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: str) -> dict:
-    if not context().storage().get_job(job_id):
+    job = context().storage().get_job(job_id)
+    if not job:
         raise HTTPException(404, "Job not found")
+    if job.status not in {"queued", "processing"}:
+        return {"cancelled": False, "status": job.status, "message": "Job is already terminal"}
     context().queue.cancel(job_id)
-    return {"cancelled": True}
+    return {"cancelled": True, "status": "cancelling" if job.status == "processing" else "cancelled"}
 
 
 @app.post("/api/jobs/{job_id}/retry", status_code=202)
@@ -357,7 +447,16 @@ def retry_job(job_id: str) -> dict:
     previous = context().storage().get_job(job_id)
     if not previous:
         raise HTTPException(404, "Job not found")
-    job = context().storage().enqueue(previous.video_id, previous.source_url, kind=previous.kind, overrides=previous.overrides)
+    if previous.status not in {"attention", "cancelled"}:
+        raise HTTPException(409, "Only failed or cancelled jobs can be retried")
+    job = context().storage().enqueue(
+        previous.video_id,
+        previous.source_url,
+        kind=previous.kind,
+        overrides=previous.overrides,
+        workflow_id=previous.workflow_id,
+        priority=previous.priority,
+    )
     context().queue.notify()
     return job.model_dump(mode="json")
 

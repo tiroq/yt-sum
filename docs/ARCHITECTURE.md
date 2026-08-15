@@ -7,8 +7,8 @@ Browser (127.0.0.1:3000)
        │ JSON/HTTP
        ▼
 Python API (127.0.0.1:8765)
-       ├── persistent download/transcription queue
-       ├── concurrent LLM worker pool
+       ├── durable workflow/stage scheduler
+       ├── resource pools and leases
        ├── yt-dlp + ffmpeg
        ├── transcript selector/parser
        ├── summary provider adapters
@@ -17,7 +17,7 @@ Python API (127.0.0.1:8765)
        └── native ASR bridge ──► Meeting Transcriber API (127.0.0.1:9876)
 ```
 
-The frontend is intentionally replaceable and does not own durable data. The Python service owns orchestration. The library filesystem is authoritative for completed records; SQLite accelerates queries and persists work-in-progress jobs.
+The frontend is intentionally replaceable and does not own durable data. The Python service owns orchestration. The library filesystem is authoritative for completed artifacts; SQLite is authoritative for workflows, dependencies, attempts, leases, and events.
 
 ## Backend modules
 
@@ -29,19 +29,14 @@ The frontend is intentionally replaceable and does not own durable data. The Pyt
 - `transcriber.py`: Meeting Transcriber automation API adapter and transcript parsing.
 - `providers.py`: Ollama/OpenAI-compatible model discovery and chat calls, Keychain access, RPM limiting.
 - `summarizer.py`: complete map-reduce pipeline and optional lossy clustering pipeline.
-- `queue.py`: durable download/transcription lane plus concurrent LLM lane, retries, cancellation, partial results, logging.
+- `queue.py`: compatibility executor while stage scheduling is migrated to the durable pipeline contract.
+- `pipeline.py`: resource-aware stage scheduling, leases, retries, cancellation, recovery, and diagnostics snapshots.
 
-## Job state machine
+## Pipeline contract
 
-```text
-queued → waiting → metadata → transcript-selection
-                                 ├─ subtitle-download → transcript-ready
-                                 └─ audio-download → transcribing → transcript-ready
-transcript-ready → summarizing → complete
-                        └────────→ attention-required
-```
+The normative graph, state machine, resource rules, recovery model, and diagnostics semantics are defined in [PIPELINE.md](PIPELINE.md), [PIPELINE_STATE_MACHINE.md](PIPELINE_STATE_MACHINE.md), and [DIAGNOSTICS.md](DIAGNOSTICS.md).
 
-Every transition is persisted. Download/transcription jobs are claimed only by the sequential acquisition worker. Summary, prompt, and speech jobs are claimed by the LLM worker pool. The pool size follows enabled model endpoints, while the shared least-loaded provider scheduler distributes concurrent requests across endpoints and each endpoint's RPM limiter remains authoritative. On restart, interrupted jobs return to `queued`; existing transcript files allow the worker to resume at summarization rather than contacting YouTube again.
+Every yt-dlp invocation shares one global resource with capacity one. ASR, LLM, TTS, and direct thumbnail HTTP work use independent resources. A task is `running` only while it genuinely executes; claimed and resource-waiting work have distinct persisted states.
 
 ## Security model
 

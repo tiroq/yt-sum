@@ -121,11 +121,15 @@ def test_health_includes_meeting_transcriber_address_and_state(monkeypatch, tmp_
     monkeypatch.setattr(api.MeetingTranscriberBridge, "health", available)
     api._context = None
     with TestClient(api.app) as client:
-        component = client.get("/api/health").json()["components"]["native_transcriber"]
+        health = client.get("/api/health").json()
+        component = health["components"]["native_transcriber"]
 
     assert component["ready"] is True
     assert component["address"] == "http://127.0.0.1:9876"
     assert component["state"] == "idle"
+    yt_dlp = next(item for item in health["resources"] if item["id"] == "yt_dlp")
+    assert yt_dlp["capacity"] == 1
+    assert "cursor" in health and "stage_tasks" in health
 
 
 def test_provider_pool_settings_persist_and_expose_status(monkeypatch, tmp_path: Path) -> None:

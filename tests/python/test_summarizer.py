@@ -93,6 +93,8 @@ def test_progress_reports_request_plan_and_actual_source(monkeypatch) -> None:
     assert events[-1].requests_completed == events[-1].requests_planned == result.request_count
     assert events[-1].provider_id == provider.id
     assert events[-1].model == provider.model
+    started_operations = [event.operation_id for event in events if event.status == "started" and event.operation_id]
+    assert len(started_operations) == len(set(started_operations))
 
 
 def test_progress_keeps_failed_request_visible(monkeypatch) -> None:

@@ -59,6 +59,7 @@ class SummaryProgress:
     provider_id: str | None = None
     provider_name: str | None = None
     model: str | None = None
+    operation_id: str | None = None
 
 
 class MultiProviderScheduler:
@@ -116,7 +117,7 @@ class MultiProviderScheduler:
 
 
 class Summarizer:
-    def __init__(self, settings: AppSettings, providers: list[ProviderSettings], template: SummaryTemplate) -> None:
+    def __init__(self, settings: AppSettings, providers: list[ProviderSettings], template: SummaryTemplate, pause_waiter=None) -> None:
         self.settings = settings
         if not providers:
             raise ValueError("At least one summary provider is required")
@@ -126,6 +127,7 @@ class Summarizer:
         self.requests = 0
         self.requests_planned = 0
         self.on_progress: Callable[[SummaryProgress], None] | None = None
+        self.pause_waiter = pause_waiter
 
     async def run(self, transcript_markdown: str, *, language: str, model: str, mode: str, on_progress: Callable[[SummaryProgress], None] | None = None) -> SummaryResult:
         self.on_progress = on_progress
@@ -155,9 +157,9 @@ class Summarizer:
         )
         return SummaryResult(markdown=frontmatter + body.strip() + "\n", request_count=self.requests, provider_ids=[provider.id for provider in self.providers], models=[provider.model for provider in self.providers])
 
-    def _emit(self, stage: str, message: str, status: str = "progress", provider: ProviderSettings | None = None) -> None:
+    def _emit(self, stage: str, message: str, status: str = "progress", provider: ProviderSettings | None = None, operation_id: str | None = None) -> None:
         if self.on_progress:
-            self.on_progress(SummaryProgress(stage, message, status, self.requests_planned, self.requests, provider.id if provider else None, provider.name if provider else None, provider.model if provider else None))
+            self.on_progress(SummaryProgress(stage, message, status, self.requests_planned, self.requests, provider.id if provider else None, provider.name if provider else None, provider.model if provider else None, operation_id))
 
     async def _map_reduce(self, source: str, language: str, model: str) -> str:
         chunks = split_text(source, self.settings.chunk_characters)
@@ -171,16 +173,64 @@ class Summarizer:
                 f"SOURCE PART:\n{chunk}"
             )
             prompts.append(prompt)
-        mapped = list(await asyncio.gather(*(self._chat(prompt, model, "summary-map", f"Summarizing source part {index}/{len(chunks)}") for index, prompt in enumerate(prompts, start=1))))
+        mapped = await self._run_bounded(
+            prompts,
+            model,
+            "summary-map",
+            lambda index, total: f"Summarizing source part {index}/{total}",
+        )
 
         level = mapped
         while len("\n\n".join(level)) > self.settings.chunk_characters:
             groups = split_text("\n\n---\n\n".join(level), self.settings.chunk_characters, overlap=0)
             self.requests_planned += len(groups)
             self._emit("summary-plan", f"Added {len(groups)} merge request(s) to the plan")
-            next_level = list(await asyncio.gather(*(self._chat(f"Merge these intermediate notes in {language}. Remove duplication but preserve all distinct facts and timestamp links.\n\n{group}", model, "summary-reduce", f"Merging intermediate notes {index}/{len(groups)}") for index, group in enumerate(groups, start=1))))
+            reduce_prompts = [
+                f"Merge these intermediate notes in {language}. Remove duplication but preserve all distinct facts and timestamp links.\n\n{group}"
+                for group in groups
+            ]
+            next_level = await self._run_bounded(
+                reduce_prompts,
+                model,
+                "summary-reduce",
+                lambda index, total: f"Merging intermediate notes {index}/{total}",
+            )
             level = next_level
         return await self._final_summary("\n\n---\n\n".join(level), language, model)
+
+    async def _run_bounded(
+        self,
+        prompts: list[str],
+        model: str,
+        stage: str,
+        message,
+    ) -> list[str]:
+        """Bound per-workflow demand so concurrent videos can share endpoints."""
+        queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+        for index, prompt in enumerate(prompts):
+            queue.put_nowait((index, prompt))
+        results = [""] * len(prompts)
+
+        async def worker() -> None:
+            while True:
+                try:
+                    index, prompt = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    results[index] = await self._chat(
+                        prompt,
+                        model,
+                        stage,
+                        message(index + 1, len(prompts)),
+                    )
+                finally:
+                    queue.task_done()
+
+        capacity = max(1, sum(provider.max_in_flight for provider in self.providers))
+        workers = [asyncio.create_task(worker()) for _ in range(min(len(prompts), capacity))]
+        await asyncio.gather(*workers)
+        return results
 
     async def _final_summary(self, source: str, language: str, model: str, lossy: bool = False) -> str:
         instruction = self.template.prompt.format(language=language)
@@ -188,14 +238,17 @@ class Summarizer:
         return await self._chat(f"{instruction}\n{warning}\nSOURCE:\n{source}", model, "summary-final", "Creating final summary")
 
     async def _chat(self, prompt: str, model: str, stage: str, message: str) -> str:
+        if self.pause_waiter:
+            await self.pause_waiter()
         self.requests += 1
-        self._emit(stage, message, "started")
+        operation_id = f"request-{self.requests}"
+        self._emit(stage, message, "started", operation_id=operation_id)
         try:
             response, provider = await self.scheduler.chat(system=SYSTEM_PROMPT, user=prompt)
         except Exception as error:
-            self._emit(stage, f"{message} failed: {error}", "failed")
+            self._emit(stage, f"{message} failed: {error}", "failed", operation_id=operation_id)
             raise
-        self._emit(stage, f"{message} completed", "completed", provider)
+        self._emit(stage, f"{message} completed", "completed", provider, operation_id)
         return response
 
     async def _representative_source(self, source: str) -> str:

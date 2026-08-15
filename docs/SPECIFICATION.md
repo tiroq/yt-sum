@@ -1,6 +1,6 @@
 # YT Sum — Product Specification
 
-Status: approved on 2026-08-14. This file is the implementation contract.
+Status: amended and approved on 2026-08-15. This file is the product contract; the durable processing contract is defined in `PIPELINE*.md` and `DIAGNOSTICS.md`.
 
 ## Product goal
 
@@ -10,7 +10,7 @@ YT Sum is a local-first macOS application for collecting YouTube links, obtainin
 
 - Single-user, local application for macOS 14.2 or newer.
 - The web interface and API bind to loopback only. There is no account system or LAN access.
-- Version 1 accepts individual videos, Shorts, and multiple manually pasted URLs. Playlist/channel expansion is out of scope.
+- Version 1 accepts individual videos, Shorts, multiple manually pasted URLs, and YouTube playlists.
 - Public videos are attempted without cookies first. A failed access attempt may retry with an imported `cookies.txt` file or browser cookies.
 - The application never downloads the video. Audio is downloaded only when YouTube has no usable transcript.
 - The project is delivered as source with a guided local setup; a signed `.app` bundle is a later phase.
@@ -19,25 +19,23 @@ YT Sum is a local-first macOS application for collecting YouTube links, obtainin
 
 - Default library: `~/Documents/YouTube Summaries/`; the user can choose another folder.
 - Each video has a readable folder named `YYYY-MM-DD Title [youtube-id]`.
-- Every video folder contains `transcript.md`, `summary.md`, `.meta.json`, and a cached thumbnail when available.
+- Every video folder contains `.meta.json` plus immutable, versioned transcript and generated artifacts. Compatibility aliases such as `summary.md` may point to the active version.
 - Previous summaries are stored in `summary-history/` and are never silently discarded.
 - The application rescans the library at startup and treats `.meta.json` plus Markdown as canonical. SQLite is a disposable search/queue index under `.yt-sum/`.
 - Deletion always offers two choices: remove only the index record, or remove the video folder after confirmation.
 
 ## Transcript selection tree
 
-1. Author-provided transcript in the primary language.
-2. Automatic transcript in the primary language.
-3. Author-provided transcript in the secondary language.
-4. Automatic transcript in the secondary language.
-5. Author or automatic transcript in the video's original language.
-6. If no transcript exists, download audio, convert to 16 kHz mono, and transcribe on-device.
+1. Original-language author transcript, then original automatic transcript.
+2. Preferred-language author transcript, then preferred automatic transcript.
+3. Secondary-language author transcript, then secondary automatic transcript.
+4. If no downloaded candidate is usable, download audio and transcribe on-device.
 
 Russian and English are the default primary and secondary languages. The chosen transcript is stored by default; other available languages can be fetched manually. Transcript segments preserve timestamps and link back to YouTube. The UI can switch to a clean-text view.
 
 ## Safe YouTube access
 
-- One background worker processes one video at a time.
+- Every yt-dlp invocation shares one global slot. Other resources may work concurrently on different workflow stages.
 - yt-dlp is configured for long, randomized pauses: 30–90 seconds by default between download steps, with request/subtitle sleeps and exponential retry delays.
 - The queue supports pause, resume, cancel, retry, and reordering.
 - A terminal failure marks the item as requiring attention and never blocks later jobs.
@@ -70,7 +68,7 @@ Russian and English are the default primary and secondary languages. The chosen 
 - Responsive Russian/English interface, Russian by default.
 - Left rail: search, status/tag/language/favorite filters, sorting, thumbnails, and all added videos.
 - Main view: Summary, Transcript, and Metadata/Processing tabs.
-- Global queue is always visible and exposes progress plus controls.
+- Global control and Diagnostics expose real stage/resource state, progress, wait reasons, and contextual controls.
 - Settings cover languages, library, download pacing, cookies, providers/models, summary templates, transcription, and advanced values.
 - System Status reports yt-dlp, ffmpeg, native transcription bridge, cookies, and provider connectivity with actionable guidance.
 - Duplicate URLs resolve by YouTube video ID and open the existing item, offering transcript refresh or a new summary.
@@ -92,4 +90,3 @@ Russian and English are the default primary and secondary languages. The chosen 
 6. The configured RPM applies to every summary request, including map and reduce steps.
 7. The UI displays partial/failure states without losing completed transcript work.
 8. Automated tests cover URL normalization, subtitle selection, caption parsing, file persistence, chunking, and API basics.
-

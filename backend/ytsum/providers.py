@@ -51,8 +51,26 @@ class AsyncRateLimiter:
         }
 
 
+class AsyncCapacityLimiter:
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.semaphore = asyncio.Semaphore(capacity)
+        self.waiting = 0
+
+    async def acquire(self) -> None:
+        self.waiting += 1
+        try:
+            await self.semaphore.acquire()
+        finally:
+            self.waiting = max(0, self.waiting - 1)
+
+    def release(self) -> None:
+        self.semaphore.release()
+
+
 class ProviderClient:
     _limiters: dict[str, AsyncRateLimiter] = {}
+    _capacity_limiters: dict[str, AsyncCapacityLimiter] = {}
     _activity: dict[str, dict[str, int | str | None]] = {}
 
     def __init__(self, provider: ProviderSettings) -> None:
@@ -62,7 +80,12 @@ class ProviderClient:
             current = AsyncRateLimiter(provider.requests_per_minute)
             self._limiters[provider.id] = current
         self.limiter = current
-        self._activity.setdefault(provider.id, {"in_flight": 0, "completed": 0, "failed": 0, "last_error": None})
+        capacity = self._capacity_limiters.get(provider.id)
+        if capacity is None or capacity.capacity != provider.max_in_flight:
+            capacity = AsyncCapacityLimiter(provider.max_in_flight)
+            self._capacity_limiters[provider.id] = capacity
+        self.capacity_limiter = capacity
+        self._activity.setdefault(provider.id, {"in_flight": 0, "completed": 0, "failed": 0, "last_error": None, "consecutive_failures": 0, "cooldown_until": 0.0})
 
     @classmethod
     def statuses(cls, providers: list[ProviderSettings]) -> list[dict]:
@@ -70,7 +93,17 @@ class ProviderClient:
         for provider in providers:
             client = cls(provider)
             activity = cls._activity[provider.id]
-            result.append({"id": provider.id, "enabled": provider.enabled, **client.limiter.status(), **activity})
+            cooldown = max(0.0, float(activity["cooldown_until"] or 0) - time.monotonic())
+            result.append({
+                "id": provider.id,
+                "enabled": provider.enabled,
+                "max_in_flight": provider.max_in_flight,
+                "concurrency_waiting": client.capacity_limiter.waiting,
+                "health": "cooldown" if cooldown else ("healthy" if provider.enabled else "paused"),
+                "cooldown_seconds": round(cooldown, 1),
+                **client.limiter.status(),
+                **activity,
+            })
         return result
 
     def _headers(self) -> dict[str, str]:
@@ -113,8 +146,12 @@ class ProviderClient:
         selected_model = model or self.provider.model
         if not selected_model:
             raise ProviderError(f"No model selected for {self.provider.name}")
-        await self.limiter.acquire()
         activity = self._activity[self.provider.id]
+        cooldown = max(0.0, float(activity["cooldown_until"] or 0) - time.monotonic())
+        if cooldown:
+            raise ProviderError(f"{self.provider.name} is cooling down for {cooldown:.1f}s")
+        await self.limiter.acquire()
+        await self.capacity_limiter.acquire()
         activity["in_flight"] = int(activity["in_flight"]) + 1
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30)) as client:
@@ -148,13 +185,26 @@ class ProviderClient:
             detail = str(error) or type(error).__name__
             activity["failed"] = int(activity["failed"]) + 1
             activity["last_error"] = detail
+            activity["consecutive_failures"] = int(activity["consecutive_failures"]) + 1
+            retry_after = 0.0
+            if isinstance(error, httpx.HTTPStatusError):
+                header = error.response.headers.get("Retry-After", "")
+                try:
+                    retry_after = float(header)
+                except ValueError:
+                    retry_after = 0.0
+            if int(activity["consecutive_failures"]) >= 3 or retry_after:
+                activity["cooldown_until"] = time.monotonic() + max(60.0, retry_after)
             raise ProviderError(f"Summary request failed for {self.provider.name}: {detail}") from error
         finally:
             activity["in_flight"] = max(0, int(activity["in_flight"]) - 1)
+            self.capacity_limiter.release()
         if not content or not content.strip():
             activity["failed"] = int(activity["failed"]) + 1
             activity["last_error"] = "Empty response"
             raise ProviderError(f"{self.provider.name} returned an empty response")
         activity["completed"] = int(activity["completed"]) + 1
         activity["last_error"] = None
+        activity["consecutive_failures"] = 0
+        activity["cooldown_until"] = 0.0
         return content.strip()

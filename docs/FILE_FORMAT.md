@@ -10,8 +10,13 @@ YouTube Summaries/
 └── 2026-08-14 Example title [Gn64NNr3bqU]/
     ├── .meta.json
     ├── thumbnail.jpg
-    ├── transcript.md
+    ├── transcripts/
+    │   ├── source/
+    │   │   └── original-en-author-20260814T101500Z.vtt
+    │   └── original-en-author-20260814T101500Z.md
     ├── summary.md
+    ├── artifacts/
+    │   └── key-ideas-run-id.md
     └── summary-history/
         └── 20260814T103000Z-llama3.1-structured.md
 ```
@@ -36,6 +41,8 @@ The sidecar is UTF-8, pretty-printed JSON. `schema_version` makes migrations exp
   "favorite": false,
   "tags": [],
   "transcript": {
+    "file": "transcripts/original-en-author-20260814T101500Z.md",
+    "raw_file": "transcripts/source/original-en-author-20260814T101500Z.vtt",
     "language": "en",
     "kind": "author",
     "engine": null,
@@ -56,9 +63,13 @@ The sidecar is UTF-8, pretty-printed JSON. `schema_version` makes migrations exp
 
 Unknown fields must be preserved by future migrations whenever possible. Secrets and cookies are forbidden.
 
-## `transcript.md`
+## Transcript artifacts
 
-The document starts with YAML-compatible front matter, followed by one paragraph per segment. The timestamp itself is a source link.
+Files under `transcripts/source/` are byte-preserving downloads and are never
+rewritten. Parsing, overlap removal, normalization, and Markdown rendering create
+separate derived files under `transcripts/`.
+
+The derived document starts with YAML-compatible front matter, followed by one paragraph per segment. The timestamp itself is a source link.
 
 ```markdown
 ---
@@ -75,4 +86,3 @@ transcript_kind: author
 ## `summary.md`
 
 The current summary also starts with front matter that records the provider, model, template, language, mode, and generation time. Previous complete files are copied to `summary-history/` before replacement.
-

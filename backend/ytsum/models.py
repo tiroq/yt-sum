@@ -19,6 +19,7 @@ class TranscriptSegment(BaseModel):
 
 class TranscriptInfo(BaseModel):
     file: str = ""
+    raw_file: str | None = None
     language: str
     kind: Literal["author", "automatic", "original", "local_asr"]
     source: Literal["youtube", "local_asr"] = "youtube"
@@ -112,6 +113,7 @@ class ProviderSettings(BaseModel):
     model: str = ""
     enabled: bool = True
     requests_per_minute: int | None = Field(default=None, ge=1, le=10000)
+    max_in_flight: int = Field(default=1, ge=1, le=100)
     temperature: float = Field(default=0, ge=0, le=2)
     max_output_tokens: int = Field(default=2048, ge=128, le=131072)
     remote: bool = False
@@ -199,6 +201,91 @@ class JobRecord(BaseModel):
     provider_name: str | None = None
     model: str | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
+    workflow_id: str = ""
+    execution_state: Literal[
+        "blocked",
+        "queued",
+        "waiting_resource",
+        "running",
+        "retry_scheduled",
+        "cancelling",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "skipped",
+    ] = "queued"
+    waiting_for: dict[str, Any] | None = None
+    priority: Literal["low", "normal", "high", "next"] = "normal"
+
+
+PipelineTaskState = Literal[
+    "blocked",
+    "queued",
+    "waiting_resource",
+    "running",
+    "retry_scheduled",
+    "cancelling",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "skipped",
+]
+
+
+class WorkflowRecord(BaseModel):
+    id: str
+    video_id: str
+    kind: str
+    status: str = "waiting"
+    priority: Literal["low", "normal", "high", "next"] = "normal"
+    settings_snapshot: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+    paused_at: str | None = None
+    completed_at: str | None = None
+
+
+class StageTaskRecord(BaseModel):
+    id: str
+    workflow_id: str
+    video_id: str
+    stage: str
+    state: PipelineTaskState = "blocked"
+    required: bool = True
+    progress: float = Field(default=0, ge=0, le=1)
+    waiting_for: dict[str, Any] | None = None
+    resource_id: str | None = None
+    attempt: int = Field(default=0, ge=0)
+    error: str | None = None
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class PipelineEventRecord(BaseModel):
+    sequence: int
+    workflow_id: str
+    stage_task_id: str | None = None
+    video_id: str
+    stage: str
+    event: str
+    from_state: PipelineTaskState | None = None
+    to_state: PipelineTaskState | None = None
+    message: str = ""
+    resource_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now)
+
+
+class ResourceSnapshot(BaseModel):
+    id: str
+    label: str
+    capacity: int = Field(ge=1)
+    in_use: int = Field(ge=0)
+    waiting: int = Field(ge=0)
+    health: Literal["healthy", "degraded", "unavailable", "paused"] = "healthy"
+    owners: list[dict[str, str]] = Field(default_factory=list)
 
 
 class JobStageEvent(BaseModel):

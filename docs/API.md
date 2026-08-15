@@ -6,7 +6,11 @@ Base URL: `http://127.0.0.1:8765/api`. The API is not designed for network expos
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Component and queue status |
+| `GET` | `/health` | Components, full pipeline aggregates, resources, and live stage tasks |
+| `GET` | `/diagnostics/snapshot` | Versioned live snapshot with workflow and stage details |
+| `GET` | `/diagnostics/events` | Monotonic pipeline events after a cursor |
+| `GET` | `/diagnostics/stream` | Server-Sent Events stream with sequence IDs |
+| `GET` | `/workflows/{id}` | Workflow, stage tasks, attempts, and events |
 | `GET` | `/videos` | Search/filter/sort library |
 | `POST` | `/videos` | Normalize video/playlist URLs and enqueue new videos |
 | `GET` | `/playlists` | Playlist groups, metadata, and video IDs |
@@ -39,3 +43,12 @@ Playlist URLs passed to `POST /videos` are resolved before jobs are created. The
 `requests_completed`, `summary_source`, provider/model fields, and a timestamped
 `stage_log`. The plan may grow if map-reduce needs another merge level; completed
 requests include a failed attempt so an error remains visible in the journal.
+
+Compatibility jobs additionally expose `workflow_id`, `execution_state`,
+`waiting_for`, and `priority`. `processing` remains available for older clients,
+but new clients must use `execution_state`: only `running` means real execution;
+`waiting_resource` includes a structured reason.
+
+Diagnostics snapshots are not derived from the paginated `/jobs` response.
+Every snapshot has a monotonic `cursor`; clients apply only events with a greater
+sequence and request another snapshot after a gap or reconnect.
