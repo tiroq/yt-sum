@@ -65,6 +65,7 @@ class LibraryStorage:
                 folder TEXT,
                 status TEXT NOT NULL,
                 favorite INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 transcript_language TEXT,
                 transcript_kind TEXT,
@@ -99,6 +100,25 @@ class LibraryStorage:
         with self._connect() as connection:
             for statement in statements:
                 connection.execute(statement)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(videos)")}
+            if "archived" not in columns:
+                connection.execute("ALTER TABLE videos ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_videos_archived_updated ON videos(archived, updated_at)")
+            if "playlists_json" not in columns:
+                connection.execute("ALTER TABLE videos ADD COLUMN playlists_json TEXT NOT NULL DEFAULT '[]'")
+            existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+            migrations = {
+                "stage_log_json": "TEXT NOT NULL DEFAULT '[]'",
+                "requests_planned": "INTEGER NOT NULL DEFAULT 0",
+                "requests_completed": "INTEGER NOT NULL DEFAULT 0",
+                "summary_source": "TEXT",
+                "provider_id": "TEXT",
+                "provider_name": "TEXT",
+                "model": "TEXT",
+            }
+            for column, definition in migrations.items():
+                if column not in existing_columns:
+                    connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
             connection.execute("UPDATE jobs SET status='queued', stage='queued' WHERE status='processing'")
             connection.execute("PRAGMA optimize")
 
@@ -143,6 +163,13 @@ class LibraryStorage:
         return None
 
     def save_meta(self, meta: VideoMeta, folder: Path) -> None:
+        # Archiving is a library-level user action.  Background jobs often hold
+        # an older ``VideoMeta`` instance while they download or summarize, so
+        # never let such an instance undo a later archive/restore operation.
+        with self._connect() as connection:
+            row = connection.execute("SELECT archived FROM videos WHERE video_id=?", (meta.video_id,)).fetchone()
+        if row is not None:
+            meta.archived = bool(row["archived"])
         meta.updated_at = utc_now()
         meta_path = folder / ".meta.json"
         temporary = meta_path.with_suffix(".tmp")
@@ -156,21 +183,21 @@ class LibraryStorage:
                 """
                 INSERT INTO videos(
                     video_id, source_url, title, channel, published_at, duration_seconds,
-                    thumbnail_file, thumbnail_url, folder, status, favorite, tags_json,
-                    transcript_language, transcript_kind, added_at, updated_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    thumbnail_file, thumbnail_url, folder, status, favorite, archived, tags_json,
+                    transcript_language, transcript_kind, playlists_json, added_at, updated_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(video_id) DO UPDATE SET
                     source_url=excluded.source_url, title=excluded.title, channel=excluded.channel,
                     published_at=excluded.published_at, duration_seconds=excluded.duration_seconds,
                     thumbnail_file=excluded.thumbnail_file, thumbnail_url=excluded.thumbnail_url,
-                    folder=excluded.folder, status=excluded.status, favorite=excluded.favorite,
+                    folder=excluded.folder, status=excluded.status, favorite=excluded.favorite, archived=excluded.archived,
                     tags_json=excluded.tags_json, transcript_language=excluded.transcript_language,
-                    transcript_kind=excluded.transcript_kind, updated_at=excluded.updated_at, error=excluded.error
+                    transcript_kind=excluded.transcript_kind, playlists_json=excluded.playlists_json, updated_at=excluded.updated_at, error=excluded.error
                 """,
                 (
                     meta.video_id, meta.source_url, meta.title, meta.channel, meta.published_at,
                     meta.duration_seconds, meta.thumbnail_file, meta.thumbnail_url,
-                    str(folder) if folder else None, meta.status, int(meta.favorite),
+                    str(folder) if folder else None, meta.status, int(meta.favorite), int(meta.archived),
                     json.dumps(meta.tags, ensure_ascii=False),
                     meta.transcript.language if meta.transcript else None,
                     meta.transcript.kind if meta.transcript else None,
@@ -202,9 +229,11 @@ class LibraryStorage:
         meta = self._row_to_meta(row)
         return VideoDetail(meta=meta)
 
-    def list_videos(self, query: str = "", status: str = "", favorite: bool | None = None, sort: str = "added_desc") -> list[dict[str, Any]]:
+    def list_videos(self, query: str = "", status: str = "", favorite: bool | None = None, archived: bool = False, sort: str = "added_desc") -> list[dict[str, Any]]:
         clauses: list[str] = []
         values: list[Any] = []
+        clauses.append("archived = ?")
+        values.append(int(archived))
         if status:
             clauses.append("status = ?")
             values.append(status)
@@ -224,15 +253,26 @@ class LibraryStorage:
             rows = connection.execute(f"SELECT * FROM videos {where} ORDER BY {order_by}", values).fetchall()
         return [self._row_to_meta(row).model_dump(mode="json") | {"folder": row["folder"]} for row in rows]
 
-    def patch_video(self, video_id: str, favorite: bool | None, tags: list[str] | None) -> VideoMeta | None:
+    def patch_video(self, video_id: str, favorite: bool | None, tags: list[str] | None, archived: bool | None = None) -> VideoMeta | None:
+        if archived is not None:
+            with self._connect() as connection:
+                exists = connection.execute(
+                    "UPDATE videos SET archived=?, updated_at=? WHERE video_id=?",
+                    (int(archived), utc_now(), video_id),
+                ).rowcount > 0
+            if not exists:
+                return None
         stored = self.read_meta(video_id)
         if not stored:
-            return None
+            detail = self.get_video(video_id) if archived is not None else None
+            return detail.meta if detail else None
         meta, folder = stored
         if favorite is not None:
             meta.favorite = favorite
         if tags is not None:
             meta.tags = sorted({tag.strip() for tag in tags if tag.strip()}, key=str.casefold)
+        if archived is not None:
+            meta.archived = archived
         self.save_meta(meta, folder)
         return meta
 
@@ -360,8 +400,8 @@ class LibraryStorage:
 
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> JobRecord:
-        return JobRecord(id=row["id"], video_id=row["video_id"], source_url=row["source_url"], kind=row["kind"], status=row["status"], stage=row["stage"], progress=row["progress"], position=row["position"], attempts=row["attempts"], created_at=row["created_at"], updated_at=row["updated_at"], error=row["error"], log=json.loads(row["log_json"]), overrides=json.loads(row["overrides_json"]))
+        return JobRecord(id=row["id"], video_id=row["video_id"], source_url=row["source_url"], kind=row["kind"], status=row["status"], stage=row["stage"], progress=row["progress"], position=row["position"], attempts=row["attempts"], created_at=row["created_at"], updated_at=row["updated_at"], error=row["error"], log=json.loads(row["log_json"]), stage_log=json.loads(row["stage_log_json"]), requests_planned=row["requests_planned"], requests_completed=row["requests_completed"], summary_source=row["summary_source"], provider_id=row["provider_id"], provider_name=row["provider_name"], model=row["model"], overrides=json.loads(row["overrides_json"]))
 
     @staticmethod
     def _row_to_meta(row: sqlite3.Row) -> VideoMeta:
-        return VideoMeta(video_id=row["video_id"], source_url=row["source_url"], title=row["title"], channel=row["channel"], published_at=row["published_at"], duration_seconds=row["duration_seconds"], thumbnail_file=row["thumbnail_file"], thumbnail_url=row["thumbnail_url"], added_at=row["added_at"], updated_at=row["updated_at"], status=row["status"], favorite=bool(row["favorite"]), tags=json.loads(row["tags_json"]), error=row["error"])
+        return VideoMeta(video_id=row["video_id"], source_url=row["source_url"], title=row["title"], channel=row["channel"], published_at=row["published_at"], duration_seconds=row["duration_seconds"], thumbnail_file=row["thumbnail_file"], thumbnail_url=row["thumbnail_url"], added_at=row["added_at"], updated_at=row["updated_at"], status=row["status"], favorite=bool(row["favorite"]), archived=bool(row["archived"]), tags=json.loads(row["tags_json"]), playlists=[PlaylistRef.model_validate(value) for value in json.loads(row["playlists_json"] or "[]")], error=row["error"])

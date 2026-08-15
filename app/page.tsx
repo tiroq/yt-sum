@@ -100,6 +100,7 @@ type VideoItem = {
   thumbnail_url: string | null;
   status: string;
   favorite: boolean;
+archived: boolean;
   tags: string[];
   added_at: string;
   updated_at: string;
@@ -120,6 +121,9 @@ const copy = {
     all: "Все видео",
     favorites: "Избранное",
     attention: "Требуют внимания",
+archived: "Архив",
+    archive: "Архивировать",
+    restore: "Восстановить",
     add: "Добавить видео",
     search: "Поиск по библиотеке",
     summary: "Summary",
@@ -137,6 +141,9 @@ const copy = {
     all: "All videos",
     favorites: "Favorites",
     attention: "Needs attention",
+archived: "Archive",
+    archive: "Archive",
+    restore: "Restore",
     add: "Add video",
     search: "Search library",
     summary: "Summary",
@@ -186,14 +193,14 @@ function IconButton({ tooltip, className = "", children, ...props }: React.Butto
 
 export default function Home() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [archivedVideos, setArchivedVideos] = useState<VideoItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<"all" | "favorite" | "attention">("all");
-  const [tab, setTab] = useState<"summary" | "transcript" | "details">("summary");
+  const [filter, setFilter] = useState<"all" | "favorite" | "attention" | "archived" | "playlist">("all");
   const [view, setView] = useState<"library" | "settings" | "status">("library");
   const [addOpen, setAddOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -208,15 +215,20 @@ export default function Home() {
 
   const refresh = useCallback(async () => {
     try {
-      const [videoPayload, jobPayload, settingsPayload, healthPayload] = await Promise.all([
+      const [videoPayload, archivedPayload, jobPayload, settingsPayload] = await Promise.all([
         request<{ items: VideoItem[] }>(`/videos${query.trim() ? `?query=${encodeURIComponent(query.trim())}` : ""}`),
+        request<{ items: VideoItem[] }>(`/videos?archived=true${query.trim() ? `&query=${encodeURIComponent(query.trim())}` : ""}`),
         request<{ items: Job[] }>("/jobs"),
         request<Settings>("/settings"),
-        request<Health>("/health"),
       ]);
-      setVideos(videoPayload.items);
-      setJobs(jobPayload.items);
-      setSettings(settingsPayload);
+      // A polling refresh may have started before an archive/restore PATCH.
+      // Never let that older response overwrite the newer local state.
+      if (libraryRefreshRevision !== libraryRefreshRevisionRef.current) return;
+      // Keep the two views mutually exclusive even when talking to an older
+      // API instance that does not yet apply the archived query parameter.
+      setVideos(videoPayload.items.filter((video) => !video.archived));
+      setArchivedVideos(archivedPayload.items.filter((video) => video.archived));
+      if (jobsRefreshRevision === jobsRefreshRevisionRef.current) setJobs(jobPayload.items);
       if (shouldApplySettingsRefresh(settingsDirtyRef.current)) setSettings(settingsPayload);
       setOnline(true);
       setSelectedId((current) => current ?? videoPayload.items[0]?.video_id ?? null);
@@ -259,12 +271,19 @@ export default function Home() {
   }, [selectedId, refreshDetail, videos]);
 
   const visibleVideos = useMemo(() => {
-    return videos.filter((video) => {
+    const filtered = (filter === "archived" ? archivedVideos : videos).filter((video) => {
       if (filter === "favorite" && !video.favorite) return false;
       if (filter === "attention" && video.status !== "attention") return false;
+      if (filter === "playlist" && !video.playlists.some((playlist) => playlist.id === playlistId)) return false;
       return true;
     });
-  }, [videos, filter]);
+    return sortVideos(filtered, sortDirection);
+  }, [videos, archivedVideos, filter, playlistId, sortDirection]);
+
+  const videoGroups = useMemo(
+    () => groupVideos(visibleVideos, grouping, t.uncategorized),
+    [visibleVideos, grouping, t.uncategorized],
+  );
 
   const activeJobs = jobs.filter((job) => ["queued", "processing"].includes(job.status));
 
@@ -287,6 +306,29 @@ export default function Home() {
     if (!detail) return;
     await request(`/videos/${detail.meta.video_id}`, { method: "PATCH", body: JSON.stringify({ favorite: !detail.meta.favorite }) });
     await refresh();
+  }
+
+  async function setArchived(video: VideoItem, archived: boolean) {
+    const nextVideo = { ...video, archived };
+    // Update both local buckets immediately so the card moves as soon as the
+    // action is activated; the refresh below then confirms the persisted state.
+    if (archived) {
+      setVideos((items) => items.filter((item) => item.video_id !== video.video_id));
+      setArchivedVideos((items) => [nextVideo, ...items.filter((item) => item.video_id !== video.video_id)]);
+    } else {
+      setArchivedVideos((items) => items.filter((item) => item.video_id !== video.video_id));
+      setVideos((items) => [nextVideo, ...items.filter((item) => item.video_id !== video.video_id)]);
+    }
+    try {
+      await request(`/videos/${video.video_id}`, { method: "PATCH", body: JSON.stringify({ archived }) });
+      if (archived && selectedId === video.video_id) {
+        setSelectedId(null);
+        setDetail(null);
+      }
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   async function editTags() {

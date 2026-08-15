@@ -50,6 +50,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .video-card { width: 100%; border: 1px solid transparent; background: transparent; color: inherit; border-radius: 12px; display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 10px; align-items: center; padding: 7px; text-align: left; cursor: pointer; transition: background .15s, border .15s; }
 .video-card:hover { background: rgba(255,255,255,.055); }
 .video-card.selected { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.1); }
+.video-card-main { min-width: 0; flex: 1; border: 0; background: transparent; color: inherit; display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 10px; align-items: center; padding: 0; text-align: left; cursor: pointer; }
+.quick-archive-button { flex: 0 0 auto; width: 29px; height: 29px; margin-left: 4px; border: 1px solid transparent; border-radius: 8px; display: grid; place-items: center; color: #89a299; background: transparent; cursor: pointer; opacity: 0; }
+.video-card:hover .quick-archive-button, .quick-archive-button:focus-visible { opacity: 1; }
+.quick-archive-button:hover { color: #d6e5dd; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.1); }
 .thumb-wrap { position: relative; height: 46px; overflow: hidden; border-radius: 8px; background: #0b211b; }
 .thumb-wrap img { width: 100%; height: 100%; object-fit: cover; opacity: .88; }
 .thumb-wrap span { position: absolute; right: 3px; bottom: 3px; padding: 1px 4px; background: rgba(0,0,0,.75); color: white; border-radius: 4px; font-size: 8px; }

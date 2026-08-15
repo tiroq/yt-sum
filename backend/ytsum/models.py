@@ -49,6 +49,7 @@ class VideoMeta(BaseModel):
     updated_at: str = Field(default_factory=utc_now)
     status: str = "queued"
     favorite: bool = False
+    archived: bool = False
     tags: list[str] = Field(default_factory=list)
     transcript: TranscriptInfo | None = None
     current_summary: SummaryVersion | None = None
@@ -149,6 +150,7 @@ class AddVideosRequest(BaseModel):
 
 class UpdateVideoRequest(BaseModel):
     favorite: bool | None = None
+    archived: bool | None = None
     tags: list[str] | None = None
 
 
