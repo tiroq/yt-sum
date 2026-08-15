@@ -44,9 +44,16 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      // Bind consistently for the local desktop app.  Some macOS environments
+      // resolve localhost to IPv4 while Vite otherwise chooses an IPv6-only
+      // listener, which makes the HMR client report a lost network connection.
+      host: "127.0.0.1",
+      hmr: { overlay: false },
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
     plugins: [
       vinext(),
       sites(),
