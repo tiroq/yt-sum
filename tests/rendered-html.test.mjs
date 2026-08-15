@@ -77,6 +77,19 @@ test("a background settings refresh preserves an unsaved Settings draft", async 
   assert.equal(shouldApplySettingsRefresh(false), true);
 });
 
+test("provider enabled control is rendered as a switch", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /function ToggleSwitch/);
+  assert.match(page, /role="switch"/);
+  assert.match(page, /Использовать endpoint в обработке/);
+  assert.match(styles, /\.toggle-switch-track/);
+  assert.match(styles, /\.toggle-switch\.on \.toggle-switch-knob/);
+});
+
 test("standalone prompts have their own UI flow and artifact endpoint", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function PromptPanel/);

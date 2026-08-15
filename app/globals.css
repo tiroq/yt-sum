@@ -273,6 +273,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .text-button:disabled { cursor: not-allowed; opacity: .45; }
 .check-row { display: flex; align-items: center; gap: 7px; margin-top: 13px; color: #626f68; font-size: 10px; line-height: 1.4; }
 .check-row input { accent-color: var(--forest-2); }
+.toggle-switch { width: 100%; display: flex; align-items: center; gap: 9px; margin-top: 13px; padding: 0; border: 0; color: #626f68; background: transparent; cursor: pointer; font: inherit; text-align: left; }
+.toggle-switch-track { position: relative; flex: 0 0 auto; width: 42px; height: 24px; border-radius: 999px; background: #d5d8d3; box-shadow: inset 0 0 0 1px rgba(32,42,36,.08); transition: background .16s ease, box-shadow .16s ease; }
+.toggle-switch-knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(23,31,27,.22); transition: transform .16s ease; }
+.toggle-switch.on .toggle-switch-track { background: var(--forest-2); box-shadow: inset 0 0 0 1px rgba(20,70,45,.18); }
+.toggle-switch.on .toggle-switch-knob { transform: translateX(18px); }
+.toggle-switch-label { color: #626f68; font-size: 10px; line-height: 1.4; }
+.toggle-switch:focus-visible .toggle-switch-track { outline: 3px solid rgba(53,102,80,.16); outline-offset: 2px; }
 .privacy-check { padding: 8px 9px; color: #7b5819; background: var(--amber-soft); border-radius: 8px; }
 .source-pool-toggle { margin: -4px 0 15px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: #f6faf7; }
 .source-status { min-height: 29px; margin-top: 11px; padding: 8px 9px; border-radius: 8px; color: #52635a; background: #eef4f0; font: 9px/1.4 ui-monospace, SFMono-Regular, monospace; }
