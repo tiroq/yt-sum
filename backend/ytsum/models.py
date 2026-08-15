@@ -18,8 +18,11 @@ class TranscriptSegment(BaseModel):
 
 
 class TranscriptInfo(BaseModel):
+    file: str = ""
     language: str
     kind: Literal["author", "automatic", "original", "local_asr"]
+    source: Literal["youtube", "local_asr"] = "youtube"
+    role: Literal["original", "settings"] = "original"
     engine: str | None = None
     segment_count: int = 0
     generated_at: str = Field(default_factory=utc_now)
@@ -33,6 +36,44 @@ class SummaryVersion(BaseModel):
     language: str
     mode: Literal["complete", "cluster"] = "complete"
     generated_at: str = Field(default_factory=utc_now)
+
+
+class PromptArtifact(BaseModel):
+    """An independently generated result kept alongside a video's transcript."""
+
+    id: str
+    file: str
+    template_id: str
+    template_name: str
+    provider_id: str
+    model: str
+    language: str
+    generated_at: str = Field(default_factory=utc_now)
+
+
+class AudioArtifact(BaseModel):
+    file: str
+    artifact: Literal["transcript", "summary"]
+    engine: str
+    voice: str
+    rate: int
+    generated_at: str = Field(default_factory=utc_now)
+
+
+class PlaylistRef(BaseModel):
+    id: str
+    title: str
+    source_url: str
+    position: int | None = Field(default=None, ge=1)
+
+
+class PlaylistMeta(BaseModel):
+    id: str
+    title: str
+    source_url: str
+    channel: str = ""
+    video_count: int = 0
+    added_at: str = Field(default_factory=utc_now)
 
 
 class VideoMeta(BaseModel):
@@ -51,10 +92,14 @@ class VideoMeta(BaseModel):
     favorite: bool = False
     archived: bool = False
     tags: list[str] = Field(default_factory=list)
+    playlists: list[PlaylistRef] = Field(default_factory=list)
     transcript: TranscriptInfo | None = None
+    transcripts: list[TranscriptInfo] = Field(default_factory=list)
     current_summary: SummaryVersion | None = None
     summary_stale: bool = False
     summary_versions: list[SummaryVersion] = Field(default_factory=list)
+    prompt_artifacts: list[PromptArtifact] = Field(default_factory=list)
+    audio_artifacts: list[AudioArtifact] = Field(default_factory=list)
     available_languages: list[str] = Field(default_factory=list)
     error: str | None = None
 
@@ -65,6 +110,7 @@ class ProviderSettings(BaseModel):
     kind: Literal["ollama", "openai"]
     base_url: str
     model: str = ""
+    enabled: bool = True
     requests_per_minute: int | None = Field(default=None, ge=1, le=10000)
     temperature: float = Field(default=0, ge=0, le=2)
     max_output_tokens: int = Field(default=2048, ge=128, le=131072)
@@ -100,6 +146,7 @@ class AppSettings(BaseModel):
     cookie_file: str = ""
     cookie_browser: str = ""
     active_provider_id: str = "ollama"
+    parallel_summary_sources: bool = True
     summary_mode: Literal["complete", "cluster"] = "complete"
     summary_template_id: str = "structured"
     chunk_characters: int = Field(default=12000, ge=1000, le=200000)
@@ -112,6 +159,9 @@ class AppSettings(BaseModel):
     asr_language: str = ""
     diarization_enabled: bool = False
     keep_audio: bool = False
+    tts_engine: Literal["macos_say"] = "macos_say"
+    tts_voice: str = ""
+    tts_rate: int = Field(default=190, ge=80, le=500)
     meeting_transcriber_url: str = "http://127.0.0.1:9876"
     meeting_transcriber_token_file: str = "~/Library/Application Support/MeetingTranscriber/.rpc-token"
     log_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -131,7 +181,7 @@ class JobRecord(BaseModel):
     id: str
     video_id: str
     source_url: str
-    kind: Literal["process", "refresh", "summarize"] = "process"
+    kind: Literal["process", "refresh", "summarize", "prompt", "tts"] = "process"
     status: str = "queued"
     stage: str = "queued"
     progress: float = Field(default=0, ge=0, le=1)
@@ -141,7 +191,25 @@ class JobRecord(BaseModel):
     updated_at: str = Field(default_factory=utc_now)
     error: str | None = None
     log: list[str] = Field(default_factory=list)
+    stage_log: list["JobStageEvent"] = Field(default_factory=list)
+    requests_planned: int = Field(default=0, ge=0)
+    requests_completed: int = Field(default=0, ge=0)
+    summary_source: str | None = None
+    provider_id: str | None = None
+    provider_name: str | None = None
+    model: str | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobStageEvent(BaseModel):
+    """A user-facing checkpoint in a background job."""
+
+    at: str = Field(default_factory=utc_now)
+    stage: str
+    message: str
+    status: Literal["started", "progress", "completed", "failed"] = "progress"
+    requests_planned: int = Field(default=0, ge=0)
+    requests_completed: int = Field(default=0, ge=0)
 
 
 class AddVideosRequest(BaseModel):
@@ -162,6 +230,17 @@ class CreateSummaryRequest(BaseModel):
     mode: Literal["complete", "cluster"] | None = None
 
 
+class CreatePromptRequest(BaseModel):
+    template_id: str
+    provider_id: str | None = None
+    model: str | None = None
+    language: str | None = None
+
+
+class CreateSpeechRequest(BaseModel):
+    artifact: Literal["transcript", "summary"]
+
+
 class ReorderJobsRequest(BaseModel):
     job_ids: list[str]
 
@@ -173,5 +252,7 @@ class ProviderSecretRequest(BaseModel):
 class VideoDetail(BaseModel):
     meta: VideoMeta
     transcript_markdown: str = ""
+    transcript_markdowns: dict[str, str] = Field(default_factory=dict)
     summary_markdown: str = ""
+    prompt_artifacts: list[PromptArtifact] = Field(default_factory=list)
     folder: str | None = None
