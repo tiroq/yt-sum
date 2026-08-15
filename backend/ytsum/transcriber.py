@@ -44,14 +44,23 @@ class MeetingTranscriberBridge:
             raise TranscriptionBridgeError("Meeting Transcriber token file is empty")
         return token
 
-    async def health(self) -> bool:
+    async def health(self) -> dict[str, str | bool | None]:
+        """Return a small diagnostic payload without exposing the bearer token."""
+        address = self.settings.meeting_transcriber_url.rstrip("/")
         try:
             token = self._token()
-            async with httpx.AsyncClient(timeout=3) as client:
-                response = await client.get(f"{self.settings.meeting_transcriber_url.rstrip('/')}/state", headers={"Authorization": f"Bearer {token}"})
-            return response.status_code == 200
-        except (OSError, httpx.HTTPError, TranscriptionBridgeError):
-            return False
+            async with httpx.AsyncClient(timeout=1) as client:
+                response = await client.get(f"{address}/state", headers={"Authorization": f"Bearer {token}"})
+            if response.status_code == 200:
+                payload = response.json()
+                return {"ready": True, "address": address, "state": str(payload.get("state") or "available"), "reason": None}
+            reason = "unauthorized" if response.status_code == 401 else "unavailable"
+            return {"ready": False, "address": address, "state": "unavailable", "reason": reason}
+        except TranscriptionBridgeError as error:
+            reason = "token_missing" if "token not found" in str(error) else "token_invalid"
+            return {"ready": False, "address": address, "state": "unavailable", "reason": reason}
+        except (OSError, httpx.HTTPError, ValueError):
+            return {"ready": False, "address": address, "state": "unavailable", "reason": "unreachable"}
 
     async def transcribe(self, audio_path: Path, max_wait_seconds: int = 1800) -> list[TranscriptSegment]:
         token = self._token()
