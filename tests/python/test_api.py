@@ -184,6 +184,38 @@ def test_local_api_can_archive_and_restore_a_video(monkeypatch, tmp_path: Path) 
         assert client.patch("/api/videos/Gn64NNr3bqU", json={"archived": False}).json()["archived"] is False
 
 
+def test_refresh_is_idempotent_and_clears_attention_status(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    from ytsum import api
+    from ytsum.models import VideoMeta
+
+    api._context = None
+    with TestClient(api.app) as client:
+        client.post("/api/jobs/pause")
+        storage = api.context().storage()
+        meta = VideoMeta(
+            video_id="Gn64NNr3bqU",
+            source_url="https://youtu.be/Gn64NNr3bqU",
+            title="Needs attention",
+            status="attention",
+            error="Previous download failed",
+        )
+        storage.save_meta(meta, storage.create_video_folder(meta))
+
+        first = client.post(f"/api/videos/{meta.video_id}/refresh")
+        second = client.post(f"/api/videos/{meta.video_id}/refresh")
+
+        assert first.status_code == second.status_code == 202
+        assert first.json()["created"] is True
+        assert second.json()["created"] is False
+        assert first.json()["id"] == second.json()["id"]
+        assert client.get("/api/videos").json()["items"][0]["status"] == "queued"
+        active = [job for job in client.get("/api/jobs").json()["items"] if job["status"] in {"queued", "processing"}]
+        assert len(active) == 1
+        assert active[0]["kind"] == "refresh"
+
+
 def test_local_api_opens_only_artifact_folders_inside_the_library(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))

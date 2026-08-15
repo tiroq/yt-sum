@@ -480,8 +480,10 @@ export default function Home() {
   async function refreshVideo() {
     if (!detail) return;
     try {
-      await request(`/videos/${detail.meta.video_id}/refresh`, { method: "POST" });
-      setNotice(language === "ru" ? "Транскрипция поставлена на переобработку." : "Transcript reprocessing has been queued.");
+      const result = await request<{ created: boolean }>(`/videos/${detail.meta.video_id}/refresh`, { method: "POST" });
+      setNotice(result.created
+        ? (language === "ru" ? "Транскрипция поставлена на переобработку." : "Transcript reprocessing has been queued.")
+        : (language === "ru" ? "Это видео уже находится в очереди на переобработку." : "This video is already queued for reprocessing."));
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

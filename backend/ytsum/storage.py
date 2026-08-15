@@ -663,6 +663,63 @@ class LibraryStorage:
             self._insert_initial_stage(connection, job)
         return job
 
+    def enqueue_refresh(
+        self,
+        video_id: str,
+        source_url: str,
+        *,
+        settings_snapshot: dict[str, Any] | None = None,
+    ) -> tuple[JobRecord, bool]:
+        """Queue at most one active acquisition workflow per video.
+
+        The existence check and insert share one SQLite transaction, so two
+        rapid clicks cannot create duplicate download work.
+        """
+        with self._connect() as connection:
+            existing = connection.execute(
+                """SELECT * FROM jobs WHERE video_id=? AND kind IN ('process', 'refresh')
+                AND status IN ('queued', 'processing') ORDER BY position, created_at LIMIT 1""",
+                (video_id,),
+            ).fetchone()
+            if existing:
+                return self._row_to_job(existing), False
+
+            next_position = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM jobs WHERE status='queued'"
+            ).fetchone()[0]
+            job = JobRecord(
+                id=str(uuid.uuid4()),
+                workflow_id=str(uuid.uuid4()),
+                video_id=video_id,
+                source_url=source_url,
+                kind="refresh",
+                position=next_position,
+            )
+            self._insert_workflow(connection, job, settings_snapshot or {})
+            self._insert_job(connection, job)
+            self._insert_initial_stage(connection, job)
+        return job, True
+
+    def mark_video_for_refresh(self, video_id: str) -> VideoMeta | None:
+        """Clear an attention state as soon as the user explicitly retries it."""
+        stored = self.read_meta(video_id)
+        if stored:
+            meta, folder = stored
+            meta.status = "queued"
+            meta.error = None
+            self.save_meta(meta, folder)
+            return meta
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
+            if not row:
+                return None
+            connection.execute(
+                "UPDATE videos SET status='queued', error=NULL, updated_at=? WHERE video_id=?",
+                (utc_now(), video_id),
+            )
+            row = connection.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
+        return self._row_to_meta(row) if row else None
+
     @staticmethod
     def _insert_workflow(connection: sqlite3.Connection, job: JobRecord, settings_snapshot: dict[str, Any]) -> None:
         connection.execute(

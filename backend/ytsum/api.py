@@ -321,9 +321,15 @@ def refresh_video(video_id: str) -> dict:
     detail = context().storage().get_video(video_id)
     if not detail:
         raise HTTPException(404, "Video not found")
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="refresh", settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
-    context().queue.notify()
-    return job.model_dump(mode="json")
+    job, created = context().storage().enqueue_refresh(
+        video_id,
+        detail.meta.source_url,
+        settings_snapshot=context().settings_repo.load().model_dump(mode="json"),
+    )
+    context().storage().mark_video_for_refresh(video_id)
+    if created:
+        context().queue.notify()
+    return job.model_dump(mode="json") | {"created": created}
 
 
 @app.post("/api/videos/{video_id}/summaries", status_code=202)
