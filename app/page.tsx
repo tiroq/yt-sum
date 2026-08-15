@@ -28,16 +28,18 @@ import {
   Tag,
   Trash2,
   Video,
+  Volume2,
   Wifi,
   WifiOff,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { GROUPING_OPTIONS, groupVideos, sortVideos } from "./video-library";
 import { formatDuration } from "./duration";
 import { clipboardPrefillResult } from "./clipboard-prefill";
 import { shouldApplySettingsRefresh } from "./settings-refresh";
+import { parseTranscriptMarkdown, transcriptText } from "./transcript";
 
 const API = process.env.NEXT_PUBLIC_YTSUM_API_URL ?? "http://127.0.0.1:8765/api";
 
@@ -47,6 +49,7 @@ type Provider = {
   kind: "ollama" | "openai";
   base_url: string;
   model: string;
+  enabled: boolean;
   requests_per_minute: number | null;
   temperature: number;
   max_output_tokens: number;
@@ -71,6 +74,7 @@ type Settings = {
   cookie_file: string;
   cookie_browser: string;
   active_provider_id: string;
+  parallel_summary_sources: boolean;
   summary_mode: "complete" | "cluster";
   summary_template_id: string;
   chunk_characters: number;
@@ -83,6 +87,9 @@ type Settings = {
   asr_language: string;
   diarization_enabled: boolean;
   keep_audio: boolean;
+  tts_engine: "macos_say";
+  tts_voice: string;
+  tts_rate: number;
   meeting_transcriber_url: string;
   meeting_transcriber_token_file: string;
   log_retention_days: number;
@@ -90,7 +97,11 @@ type Settings = {
   templates: Template[];
 };
 
+type ProviderStatus = { id: string; enabled: boolean; requests_per_minute: number | null; requests_in_window: number; waiting: number; retry_after_seconds: number; in_flight: number; completed: number; failed: number; last_error: string | null };
+
 type SummaryVersion = { provider_id: string; model: string; template_id: string; language: string; mode: string; generated_at: string; file: string };
+type AudioArtifact = { file: string; artifact: "transcript" | "summary"; engine: string; voice: string; rate: number; generated_at: string };
+type TranscriptArtifact = { file: string; language: string; kind: string; source: string; role: "original" | "settings"; engine: string | null; segment_count: number; generated_at: string };
 type VideoItem = {
   video_id: string;
   source_url: string;
@@ -102,20 +113,27 @@ type VideoItem = {
   thumbnail_url: string | null;
   status: string;
   favorite: boolean;
-archived: boolean;
+  archived: boolean;
   tags: string[];
+  playlists: { id: string; title: string; source_url: string; position: number | null }[];
+  audio_artifacts: AudioArtifact[];
   added_at: string;
   updated_at: string;
-  transcript: { language: string; kind: string; engine: string | null; segment_count: number } | null;
+  transcript: { file: string; language: string; kind: string; engine: string | null; segment_count: number } | null;
+  transcripts: TranscriptArtifact[];
   current_summary: SummaryVersion | null;
   summary_stale: boolean;
   summary_versions: SummaryVersion[];
   error: string | null;
 };
+type Playlist = { id: string; title: string; source_url: string; position: number | null; video_count: number; video_ids: string[] };
 
-type VideoDetail = { meta: VideoItem; transcript_markdown: string; summary_markdown: string; folder: string | null };
-type Job = { id: string; video_id: string; status: string; stage: string; progress: number; error: string | null; log: string[] };
-type Health = { status: string; queue_paused: boolean; library: string; components: Record<string, { ready: boolean; version?: string; engine?: string }> };
+type PromptArtifact = { id: string; file: string; template_id: string; template_name: string; provider_id: string; model: string; language: string; generated_at: string };
+type VideoDetail = { meta: VideoItem & { prompt_artifacts?: PromptArtifact[] }; transcript_markdown: string; transcript_markdowns: Record<string, string>; summary_markdown: string; prompt_artifacts: PromptArtifact[]; folder: string | null };
+type JobStageEvent = { at: string; stage: string; message: string; status: "started" | "progress" | "completed" | "failed"; requests_planned: number; requests_completed: number };
+type Job = { id: string; video_id: string; kind: string; status: string; stage: string; progress: number; error: string | null; log: string[]; stage_log: JobStageEvent[]; requests_planned: number; requests_completed: number; summary_source: string | null; provider_id: string | null; provider_name: string | null; model: string | null };
+type Health = { status: string; queue_paused: boolean; library: string; components: Record<string, { ready: boolean; version?: string; engine?: string; address?: string; state?: string; reason?: string }> };
+type SourceUpdate = { available: boolean; clean: boolean | null; branch: string | null; upstream: string | null; ahead: number; behind: number; can_pull: boolean; diagnostic: string; updated?: boolean; restart_required?: boolean };
 
 const copy = {
   ru: {
@@ -123,12 +141,18 @@ const copy = {
     all: "Все видео",
     favorites: "Избранное",
     attention: "Требуют внимания",
-archived: "Архив",
+    archived: "Архив",
     archive: "Архивировать",
     restore: "Восстановить",
     add: "Добавить видео",
     search: "Поиск по библиотеке",
+    sort: "Сортировка",
+    grouping: "Группировка",
+    alphabetical: "По названию: А–Я",
+    alphabeticalReverse: "По названию: Я–А",
+    uncategorized: "Без категории",
     summary: "Summary",
+    prompts: "Промпты",
     transcript: "Транскрипция",
     details: "Метаданные",
     settings: "Настройки",
@@ -143,12 +167,18 @@ archived: "Архив",
     all: "All videos",
     favorites: "Favorites",
     attention: "Needs attention",
-archived: "Archive",
+    archived: "Archive",
     archive: "Archive",
     restore: "Restore",
     add: "Add video",
     search: "Search library",
+    sort: "Sort",
+    grouping: "Group",
+    alphabetical: "Title: A–Z",
+    alphabeticalReverse: "Title: Z–A",
+    uncategorized: "Uncategorized",
     summary: "Summary",
+    prompts: "Prompts",
     transcript: "Transcript",
     details: "Metadata",
     settings: "Settings",
@@ -161,19 +191,12 @@ archived: "Archive",
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
+  const response = await fetch(`${API}${path}`, { ...init, cache: init?.cache ?? "no-store", headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(payload.detail ?? response.statusText);
   }
   return response.json();
-}
-
-function formatDuration(seconds: number | null) {
-  if (!seconds) return "";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return hours ? `${hours}:${String(minutes).padStart(2, "0")}` : `${minutes} мин`;
 }
 
 function statusLabel(status: string, language: "ru" | "en") {
@@ -196,15 +219,19 @@ function IconButton({ tooltip, className = "", children, ...props }: React.Butto
 export default function Home() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [archivedVideos, setArchivedVideos] = useState<VideoItem[]>([]);
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [playlistId, setPlaylistId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const settingsDirtyRef = useRef(false);
+  const jobsRefreshRevisionRef = useRef(0);
   const libraryRefreshRevisionRef = useRef(0);
   const [health, setHealth] = useState<Health | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "favorite" | "attention" | "archived" | "playlist">("all");
-const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [grouping, setGrouping] = useState<"none" | "tag" | "topic">("none");
   const [tab, setTab] = useState<"summary" | "prompts" | "transcript" | "details">("summary");
   const [promptResult, setPromptResult] = useState<{ artifact: PromptArtifact; markdown: string } | null>(null);
@@ -213,12 +240,20 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [queueOpen, setQueueOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [links, setLinks] = useState("");
-  const [cleanTranscript, setCleanTranscript] = useState(false);
+  const addDialogTriggerRef = useRef<HTMLElement | null>(null);
+  const [transcriptView, setTranscriptView] = useState<"continuous" | "structured">("continuous");
+  const [transcriptFile, setTranscriptFile] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(true);
 
   const language = settings?.interface_language ?? "ru";
   const t = copy[language];
+
+  useEffect(() => {
+    setTranscriptFile(detail?.meta.transcript?.file ?? detail?.meta.transcripts?.[0]?.file ?? "");
+  }, [detail?.meta.video_id, detail?.meta.transcript?.file, detail?.meta.transcripts]);
+
   useEffect(() => {
     const savedSort = window.localStorage.getItem("yt-sum.library.sort");
     const savedGrouping = window.localStorage.getItem("yt-sum.library.grouping");
@@ -261,6 +296,8 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
       if (shouldApplySettingsRefresh(settingsDirtyRef.current)) setSettings(settingsPayload);
       setOnline(true);
       setSelectedId((current) => current ?? videoPayload.items[0]?.video_id ?? null);
+      void request<Health>("/health").then(setHealth).catch(() => setHealth(null));
+      void request<{ items: Playlist[] }>("/playlists").then((payload) => setPlaylists(payload.items)).catch(() => setPlaylists([]));
     } catch (cause) {
       setOnline(false);
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -315,6 +352,17 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   );
 
   const activeJobs = jobs.filter((job) => ["queued", "processing"].includes(job.status));
+  const selectedSummaryJob = useMemo(() => jobs.filter((job) => job.video_id === selectedId && job.kind === "summarize").sort((left, right) => (left.status === "processing" ? -1 : right.status === "processing" ? 1 : 0))[0], [jobs, selectedId]);
+
+  function openAddDialog(event: React.MouseEvent<HTMLElement>) {
+    addDialogTriggerRef.current = event.currentTarget;
+    setAddOpen(true);
+  }
+
+  function closeAddDialog() {
+    setAddOpen(false);
+    window.requestAnimationFrame(() => addDialogTriggerRef.current?.focus());
+  }
 
   async function addVideos() {
     const urls = links.split(/\n+/).map((value) => value.trim()).filter(Boolean);
@@ -322,7 +370,7 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
     try {
       const payload = await request<{ existing: string[]; errors: { error: string }[] }>("/videos", { method: "POST", body: JSON.stringify({ urls }) });
       setLinks("");
-      setAddOpen(false);
+      closeAddDialog();
       if (payload.existing[0]) setSelectedId(payload.existing[0]);
       if (payload.errors.length) setError(payload.errors.map((item) => item.error).join("\n"));
       await refresh();
@@ -375,11 +423,57 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
     await refresh();
   }
 
+  async function runPrompt(templateId: string) {
+    if (!detail) return;
+    try {
+      await request(`/videos/${detail.meta.video_id}/prompts`, { method: "POST", body: JSON.stringify({ template_id: templateId }) });
+      setQueueOpen(true);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function openPromptArtifact(artifact: PromptArtifact) {
+    if (!detail) return;
+    try {
+      setPromptResult(await request<{ artifact: PromptArtifact; markdown: string }>(`/videos/${detail.meta.video_id}/prompts/${artifact.id}`));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function createSpeech(artifact: "transcript" | "summary") {
+    if (!detail) return;
+    try {
+      await request(`/videos/${detail.meta.video_id}/speech`, { method: "POST", body: JSON.stringify({ artifact }) });
+      setQueueOpen(true);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
   async function refreshVideo() {
     if (!detail) return;
-    await request(`/videos/${detail.meta.video_id}/refresh`, { method: "POST" });
-    setQueueOpen(true);
-    await refresh();
+    try {
+      await request(`/videos/${detail.meta.video_id}/refresh`, { method: "POST" });
+      setQueueOpen(true);
+      setNotice(language === "ru" ? "Транскрипция поставлена на переобработку." : "Transcript reprocessing has been queued.");
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function openArtifactsFolder() {
+    if (!detail) return;
+    try {
+      await request(`/videos/${detail.meta.video_id}/folder/open`, { method: "POST" });
+      setNotice(language === "ru" ? "Папка артефактов открыта в Finder." : "Artifacts folder opened in Finder.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   async function deleteVideo() {
@@ -391,16 +485,31 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
     await refresh();
   }
 
+  async function deleteJobHistory(job: Job) {
+    if (!window.confirm(language === "ru" ? "Удалить эту запись из истории обработки? Видео и его файлы останутся на месте." : "Remove this processing-history entry? The video and its files will stay in place.")) return;
+    // Invalidate an in-flight poll before changing local state, so a stale
+    // response cannot make the removed entry reappear.
+    jobsRefreshRevisionRef.current += 1;
+    try {
+      await request(`/jobs/${job.id}`, { method: "DELETE" });
+      setJobs((current) => current.filter((item) => item.id !== job.id));
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      await refresh();
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="brand-row">
           <div className="brand-mark"><Sparkles size={19} strokeWidth={2.4} /></div>
           <div><div className="brand-name">YT Sum</div><div className="brand-subtitle">local intelligence</div></div>
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></button>
+          <IconButton className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></IconButton>
         </div>
 
-        <button className="add-button" onClick={() => setAddOpen(true)}><Plus size={18} />{t.add}</button>
+        <button className="add-button" onClick={openAddDialog}><Plus size={18} />{t.add}</button>
 
         <nav className="nav-stack" aria-label="Primary navigation">
           <button className={view === "library" && filter === "all" ? "nav-item active" : "nav-item"} onClick={() => { setView("library"); setFilter("all"); }}><Archive size={18} />{t.all}<span>{videos.length}</span></button>
@@ -421,8 +530,8 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
             <div key={`${group.id}-${video.video_id}`} className={`video-card ${selectedId === video.video_id && view === "library" ? "selected" : ""}`}>
               <button className="video-card-main" onClick={() => { setSelectedId(video.video_id); setView("library"); setSidebarOpen(false); }}>
                 <div className="thumb-wrap"><img src={video.thumbnail_file ? `${API}/videos/${video.video_id}/thumbnail` : `https://i.ytimg.com/vi/${video.video_id}/mqdefault.jpg`} alt="" />{video.duration_seconds !== null ? <span>{formatDuration(video.duration_seconds)}</span> : null}</div>
-              <div className="video-card-copy"><strong>{video.title}</strong><small>{video.channel || statusLabel(video.status, language)}</small><div className={`status-dot ${video.status}`} /> </div>
-            </button>
+                <div className="video-card-copy"><strong>{video.title}</strong><small>{video.channel || statusLabel(video.status, language)}</small><div className={`status-dot ${video.status}`} /> </div>
+              </button>
               <IconButton className="quick-archive-button" onClick={(event) => { event.stopPropagation(); void setArchived(video, !video.archived); }} aria-label={video.archived ? t.restore : t.archive} tooltip={video.archived ? "Вернуть видео в библиотеку. Оно снова появится среди обычных видео." : "Архивировать видео. Оно исчезнет из обычного списка, но файлы сохранятся."}>{video.archived ? <ArchiveX size={15} /> : <Archive size={15} />}</IconButton>
             </div>
           ))}</section>)}
@@ -436,7 +545,7 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
       <section className="workspace">
         <header className="topbar">
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Menu" tooltip="Открыть меню навигации. Фокус перейдёт в боковую панель."><Menu size={20} /></button>
+          <IconButton className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Menu" tooltip="Открыть меню навигации. Фокус перейдёт в боковую панель."><Menu size={20} /></IconButton>
           <div className="breadcrumb"><span>YT Sum</span><span>/</span><strong>{view === "library" ? detail?.meta.title ?? t.library : view === "settings" ? t.settings : t.status}</strong></div>
           <div className="topbar-actions">
             <div className={`online-pill ${online ? "" : "offline"}`}>{online ? <Wifi size={14} /> : <WifiOff size={14} />}{online ? "Local" : "Offline"}</div>
@@ -458,24 +567,26 @@ const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
             <nav className="tabs">
               <button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}><Sparkles size={16} />{t.summary}</button>
+              <button className={tab === "prompts" ? "active" : ""} onClick={() => setTab("prompts")}><ListChecks size={16} />{t.prompts}</button>
               <button className={tab === "transcript" ? "active" : ""} onClick={() => setTab("transcript")}><FileText size={16} />{t.transcript}</button>
               <button className={tab === "details" ? "active" : ""} onClick={() => setTab("details")}><SlidersHorizontal size={16} />{t.details}</button>
             </nav>
 
             <section className="content-scroll">
-              {tab === "summary" ? <MarkdownPanel markdown={detail.summary_markdown} empty={language === "ru" ? "Summary ещё не создано." : "Summary has not been created yet."} action={<button className="secondary-button" onClick={resummarize}><RotateCcw size={16} />{language === "ru" ? "Создать заново" : "Regenerate"}</button>} /> : null}
-              {tab === "transcript" ? <TranscriptPanel markdown={detail.transcript_markdown} clean={cleanTranscript} setClean={setCleanTranscript} language={language} /> : null}
-              {tab === "details" ? <DetailsPanel detail={detail} jobs={jobs.filter((job) => job.video_id === detail.meta.video_id)} language={language} /> : null}
+              {tab === "summary" ? <><SummaryProgressCard job={selectedSummaryJob} language={language} /><MarkdownPanel markdown={detail.summary_markdown} empty={language === "ru" ? "Summary ещё не создано." : "Summary has not been created yet."} action={<button className="secondary-button" onClick={resummarize}><RotateCcw size={16} />{language === "ru" ? "Создать заново" : "Regenerate"}</button>} /><SpeechPanel detail={detail} artifact="summary" onCreate={createSpeech} language={language} /></> : null}
+              {tab === "prompts" ? <PromptPanel templates={settings?.templates ?? []} artifacts={detail.prompt_artifacts ?? []} selected={promptResult} language={language} onRun={runPrompt} onOpen={openPromptArtifact} /> : null}
+              {tab === "transcript" ? <><TranscriptPanel detail={detail} file={transcriptFile} setFile={setTranscriptFile} view={transcriptView} setView={setTranscriptView} language={language} onReprocess={refreshVideo} /><SpeechPanel detail={detail} artifact="transcript" onCreate={createSpeech} language={language} /></> : null}
+              {tab === "details" ? <DetailsPanel detail={detail} jobs={jobs.filter((job) => job.video_id === detail.meta.video_id)} language={language} onDeleteJob={deleteJobHistory} onOpenFolder={openArtifactsFolder} /> : null}
             </section>
           </>
         ) : (
-          <EmptyState onAdd={() => setAddOpen(true)} title={t.emptyTitle} body={t.emptyBody} />
+          <EmptyState onAdd={openAddDialog} title={t.emptyTitle} body={t.emptyBody} />
         )}
       </section>
 
-      {addOpen ? <AddDialog links={links} setLinks={setLinks} onClose={() => setAddOpen(false)} onAdd={addVideos} language={language} /> : null}
+      {addOpen ? <AddDialog links={links} setLinks={setLinks} onClose={closeAddDialog} onAdd={addVideos} language={language} /> : null}
       {queueOpen ? <QueuePanel jobs={jobs} paused={health?.queue_paused ?? false} close={() => setQueueOpen(false)} refresh={refresh} language={language} /> : null}
-      {error && online ? <div className="toast"><AlertCircle size={18} /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error" tooltip="Закрыть сообщение об ошибке. Выполненное действие не отменяется."><X size={16} /></IconButton></div> : null}
+      {error && online ? <div className="toast"><AlertCircle size={18} /><span>{error}</span><IconButton onClick={() => setError("")} aria-label="Dismiss error" tooltip="Закрыть сообщение об ошибке. Выполненное действие не отменяется."><X size={16} /></IconButton></div> : null}
       {notice ? <div className="toast success" role="status"><CheckCircle2 size={18} /><span>{notice}</span><IconButton onClick={() => setNotice("")} aria-label="Dismiss notification" tooltip="Закрыть уведомление."><X size={16} /></IconButton></div> : null}
     </main>
   );
@@ -512,19 +623,25 @@ function TranscriptPanel({ detail, file, setFile, view, setView, language, onRep
   return <article className="document-card transcript-document"><div className="document-toolbar"><div><span className="overline">SOURCE</span><h2>{language === "ru" ? "Полная транскрипция" : "Full transcript"}</h2></div><div className="document-actions"><button type="button" className="secondary-button" onClick={onReprocess}><RefreshCw size={16} />{language === "ru" ? "Переобработать" : "Reprocess"}</button><div className="view-toggle" role="group" aria-label={language === "ru" ? "Вид транскрипции" : "Transcript view"}><button type="button" className={view === "continuous" ? "active" : ""} aria-pressed={view === "continuous"} onClick={() => setView("continuous")}>{labels.continuous}</button><button type="button" className={view === "structured" ? "active" : ""} aria-pressed={view === "structured"} onClick={() => setView("structured")}>{labels.structured}</button></div></div></div>{artifacts.length > 1 ? <label className="field full"><span>{language === "ru" ? "Вариант транскрипции" : "Transcript version"}</span><select value={file} onChange={(event) => setFile(event.target.value)}>{artifacts.map((artifact) => <option value={artifact.file} key={artifact.file}>{artifact.role === "original" ? (language === "ru" ? "Исходник" : "Original") : (language === "ru" ? "Язык настроек" : "Settings language")} · {artifact.language.toUpperCase()} · {artifact.kind} · {artifact.source}</option>)}</select></label> : null}{markdown ? view === "continuous" ? <div className="plain-transcript">{plain}</div> : <div className="structured-transcript">{segments.map((segment, index) => <div className="transcript-segment" key={`${segment.timestamp}-${index}`}><a className="transcript-timestamp" href={segment.href ?? undefined} target="_blank" rel="noreferrer">{segment.timestamp}</a><div className="transcript-segment-text">{segment.speaker ? <strong>{segment.speaker}:</strong> : null}{segment.text}</div></div>)}</div> : <div className="empty-inline"><FileText size={28} /><p>{language === "ru" ? "Транскрипция ещё не готова." : "Transcript is not ready yet."}</p></div>}</article>;
 }
 
-function DetailsPanel({ detail, jobs, language }: { detail: VideoDetail; jobs: Job[]; language: "ru" | "en" }) {
+function DetailsPanel({ detail, jobs, language, onDeleteJob, onOpenFolder }: { detail: VideoDetail; jobs: Job[]; language: "ru" | "en"; onDeleteJob: (job: Job) => void; onOpenFolder: () => void }) {
+  // Video metadata written before playlists and summary history were introduced
+  // does not contain these arrays. Keep older local libraries readable.
+  const summaryVersions = detail.meta.summary_versions ?? [];
+  const playlists = detail.meta.playlists ?? [];
   const rows = [
     ["YouTube ID", detail.meta.video_id],
     [language === "ru" ? "Папка" : "Folder", detail.folder ?? "—"],
     [language === "ru" ? "Язык текста" : "Transcript language", detail.meta.transcript?.language ?? "—"],
     [language === "ru" ? "Источник текста" : "Transcript source", detail.meta.transcript?.kind ?? "—"],
+    [language === "ru" ? "Варианты текста" : "Transcript versions", String(detail.meta.transcripts?.length ?? 0)],
     [language === "ru" ? "Модель summary" : "Summary model", detail.meta.current_summary?.model ?? "—"],
-    [language === "ru" ? "Версий summary" : "Summary versions", String(detail.meta.summary_versions.length + (detail.meta.current_summary ? 1 : 0))],
+    [language === "ru" ? "Версий summary" : "Summary versions", String(summaryVersions.length + (detail.meta.current_summary ? 1 : 0))],
+    [language === "ru" ? "Плейлисты" : "Playlists", playlists.length ? playlists.map((playlist) => `${playlist.title}${playlist.position ? ` #${playlist.position}` : ""}`).join(", ") : "—"],
   ];
   return <div className="details-grid"><section className="info-card"><span className="overline">FILE-FIRST</span><h2>{language === "ru" ? "Данные видео" : "Video data"}</h2>{rows.map(([label, value]) => <div className="detail-row" key={label}><span>{label}</span><strong title={value}>{value}</strong></div>)}<button className="secondary-button" onClick={onOpenFolder} disabled={!detail.folder}><FolderOpen size={16} />{language === "ru" ? "Открыть папку артефактов" : "Open artifacts folder"}</button></section><section className="info-card"><span className="overline">PROCESSING</span><h2>{language === "ru" ? "История обработки" : "Processing history"}</h2>{jobs.length ? jobs.map((job) => <details className="job-history" key={job.id}><summary><div className={`job-state ${job.status}`}><Clock3 size={15} /></div><div><strong>{job.stage}</strong><p>{job.error || `${Math.round(job.progress * 100)}%`}</p></div>{["complete", "attention"].includes(job.status) ? <button className="mini-button danger-hover job-history-delete" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onDeleteJob(job); }} aria-label={language === "ru" ? "Удалить запись истории" : "Remove history entry"} title={language === "ru" ? "Удалить запись истории" : "Remove history entry"}><X size={14} /></button> : null}</summary>{job.log.length ? <div className="job-log"><button className="text-button" onClick={() => { void navigator.clipboard.writeText(job.log.join("\n")); }}><FileText size={13} />{language === "ru" ? "Копировать лог" : "Copy log"}</button><pre>{job.log.join("\n")}</pre></div> : null}</details>) : <p className="muted">{language === "ru" ? "Задач пока нет." : "No jobs yet."}</p>}</section></div>;
 }
 
-function EmptyState({ onAdd, title, body }: { onAdd: () => void; title: string; body: string }) {
+function EmptyState({ onAdd, title, body }: { onAdd: (event: React.MouseEvent<HTMLButtonElement>) => void; title: string; body: string }) {
   return <div className="empty-state"><div className="empty-orbit"><Video size={34} /><span /><span /></div><h1>{title}</h1><p>{body}</p><button className="primary-button" onClick={onAdd}><Plus size={17} />Добавить ссылку</button><div className="feature-hints"><span><CheckCircle2 size={15} />Markdown first</span><span><CheckCircle2 size={15} />Local models</span><span><CheckCircle2 size={15} />Slow & respectful</span></div></div>;
 }
 
@@ -601,30 +718,61 @@ function AddDialog({ links, setLinks, onClose, onAdd, language }: { links: strin
 }
 
 function QueuePanel({ jobs, paused, close, refresh, language }: { jobs: Job[]; paused: boolean; close: () => void; refresh: () => Promise<void>; language: "ru" | "en" }) {
-  async function queueAction(path: string) { await request(path, { method: "POST" }); await refresh(); }
+  const downloadJobs = jobs.filter((job) => ["process", "refresh"].includes(job.kind));
+  const llmJobs = jobs.filter((job) => ["summarize", "prompt", "tts"].includes(job.kind));
+  async function queueAction(path: string) {
+    try { await request(path, { method: "POST" }); } catch { /* refresh below shows the authoritative state */ }
+    try { await refresh(); } catch { /* the next poll will retry */ }
+  }
   async function moveJob(job: Job, delta: number) {
-    const queued = jobs.filter((item) => item.status === "queued");
+    const lane = ["process", "refresh"].includes(job.kind) ? downloadJobs : llmJobs;
+    const queued = lane.filter((item) => item.status === "queued");
     const index = queued.findIndex((item) => item.id === job.id);
     const target = index + delta;
     if (index < 0 || target < 0 || target >= queued.length) return;
     [queued[index], queued[target]] = [queued[target], queued[index]];
-    await request("/jobs/reorder", { method: "POST", body: JSON.stringify({ job_ids: queued.map((item) => item.id) }) });
-    await refresh();
+    try {
+      await request("/jobs/reorder", { method: "POST", body: JSON.stringify({ job_ids: queued.map((item) => item.id) }) });
+      await refresh();
+    } catch { /* keep the current order until the next refresh */ }
   }
-  return <aside className="queue-panel"><div className="queue-heading"><div><span className="overline">BACKGROUND</span><h2>{language === "ru" ? "Очередь обработки" : "Processing queue"}</h2></div><button className="icon-button" onClick={close}><X size={18} /></button></div><button className="queue-control" onClick={() => queueAction(paused ? "/jobs/resume" : "/jobs/pause")}>{paused ? <Play size={16} /> : <Pause size={16} />}{paused ? (language === "ru" ? "Продолжить" : "Resume") : (language === "ru" ? "Пауза" : "Pause")}</button><div className="queue-items">{jobs.length ? jobs.map((job) => <div className="queue-item" key={job.id}><div className="queue-item-top"><div className={`job-icon ${job.status}`}>{job.status === "processing" ? <LoaderCircle size={16} className="spin" /> : job.status === "complete" ? <CheckCircle2 size={16} /> : job.status === "attention" ? <AlertCircle size={16} /> : <Clock3 size={16} />}</div><div><strong>{job.stage}</strong><small>{job.video_id}</small></div>{job.status === "queued" ? <div className="reorder-buttons"><button className="mini-button" onClick={() => moveJob(job, -1)} aria-label="Move up"><ChevronUp size={13} /></button><button className="mini-button" onClick={() => moveJob(job, 1)} aria-label="Move down"><ChevronDown size={13} /></button></div> : null}<button className="mini-button" onClick={() => queueAction(job.status === "attention" ? `/jobs/${job.id}/retry` : `/jobs/${job.id}/cancel`)}>{job.status === "attention" ? <RotateCcw size={14} /> : <Square size={13} />}</button></div><div className="progress-track"><span style={{ width: `${job.progress * 100}%` }} /></div>{job.error ? <p className="job-error">{job.error}</p> : null}</div>) : <div className="queue-empty"><CheckCircle2 size={24} /><p>{language === "ru" ? "Очередь пуста" : "Queue is empty"}</p></div>}</div></aside>;
+  const renderLane = (laneJobs: Job[], title: string) => <section className="queue-lane"><div className="queue-lane-heading"><h3>{title}</h3><span>{laneJobs.filter((job) => ["queued", "processing"].includes(job.status)).length}</span></div><div className="queue-items">{laneJobs.length ? laneJobs.map((job) => <div className="queue-item" key={job.id}><div className="queue-item-top"><div className={`job-icon ${job.status}`}>{job.status === "processing" ? <LoaderCircle size={16} className="spin" /> : job.status === "complete" ? <CheckCircle2 size={16} /> : job.status === "attention" ? <AlertCircle size={16} /> : <Clock3 size={16} />}</div><div><strong>{job.stage}</strong><small>{job.video_id}{["summarize", "prompt"].includes(job.kind) ? ` · ${job.requests_completed}/${job.requests_planned || "—"}` : ""}</small>{job.provider_name || job.model ? <small>{[job.provider_name, job.model].filter(Boolean).join(" / ")}</small> : null}</div>{job.status === "queued" ? <div className="reorder-buttons"><button className="mini-button" onClick={() => void moveJob(job, -1)} aria-label="Move up"><ChevronUp size={13} /></button><button className="mini-button" onClick={() => void moveJob(job, 1)} aria-label="Move down"><ChevronDown size={13} /></button></div> : null}<button className="mini-button" onClick={() => void queueAction(job.status === "attention" ? `/jobs/${job.id}/retry` : `/jobs/${job.id}/cancel`)}>{job.status === "attention" ? <RotateCcw size={14} /> : <Square size={13} />}</button></div><div className="progress-track"><span style={{ width: `${job.progress * 100}%` }} /></div>{job.error ? <p className="job-error">{job.error}</p> : null}</div>) : <div className="queue-empty"><CheckCircle2 size={24} /><p>{language === "ru" ? "Очередь пуста" : "Queue is empty"}</p></div>}</div></section>;
+  return <aside className="queue-panel"><div className="queue-heading"><div><span className="overline">BACKGROUND</span><h2>{language === "ru" ? "Очереди обработки" : "Processing queues"}</h2></div><button className="icon-button" onClick={close}><X size={18} /></button></div><div className="queue-controls"><button className="queue-control" onClick={() => void queueAction(paused ? "/jobs/resume" : "/jobs/pause")}>{paused ? <Play size={16} /> : <Pause size={16} />}{paused ? (language === "ru" ? "Продолжить" : "Resume") : (language === "ru" ? "Пауза" : "Pause")}</button><button className="queue-stop-all" onClick={() => { if (window.confirm(language === "ru" ? "Остановить все активные и ожидающие задачи?" : "Stop all active and queued jobs?")) void queueAction("/jobs/stop"); }}>{language === "ru" ? "Остановить всё" : "Stop all"}</button></div>{renderLane(downloadJobs, language === "ru" ? "Загрузка и транскрипция" : "Download and transcript")}{renderLane(llmJobs, language === "ru" ? "Языковые модели" : "Language models")}</aside>;
 }
 
 function SettingsView({ settings, setSettings, onSaved, language }: { settings: Settings; setSettings: (value: Settings) => void; onSaved: () => Promise<void>; language: "ru" | "en" }) {
   const [saving, setSaving] = useState(false);
   const [models, setModels] = useState<Record<string, string[]>>({});
   const [secret, setSecretValue] = useState<Record<string, string>>({});
+  const [sourceStatus, setSourceStatus] = useState<Record<string, ProviderStatus>>({});
+  const refreshStatuses = useCallback(async () => {
+    try {
+      const payload = await request<{ items: ProviderStatus[] }>("/providers/status");
+      setSourceStatus(Object.fromEntries(payload.items.map((item) => [item.id, item])));
+    } catch {
+      // Older API processes may not expose provider status yet. The settings
+      // page remains usable and will retry on the next polling interval.
+      setSourceStatus({});
+    }
+  }, []);
+  useEffect(() => { void refreshStatuses(); const timer = window.setInterval(() => { void refreshStatuses(); }, 2000); return () => window.clearInterval(timer); }, [refreshStatuses]);
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => setSettings({ ...settings, [key]: value });
   const updateProvider = (id: string, patch: Partial<Provider>) => update("providers", settings.providers.map((provider) => provider.id === id ? { ...provider, ...patch } : provider));
   const updateTemplate = (id: string, patch: Partial<Template>) => update("templates", settings.templates.map((template) => template.id === id ? { ...template, ...patch } : template));
 
   async function save() { setSaving(true); try { await request("/settings", { method: "PUT", body: JSON.stringify(settings) }); for (const [id, apiKey] of Object.entries(secret)) if (apiKey) await request(`/providers/${id}/secret`, { method: "POST", body: JSON.stringify({ api_key: apiKey }) }); setSecretValue({}); await onSaved(); } finally { setSaving(false); } }
-  async function discover(provider: Provider) { const payload = await request<{ items: string[] }>(`/providers/${provider.id}/models`, { method: "POST" }); setModels({ ...models, [provider.id]: payload.items }); }
-  function addProvider() { const id = `provider-${Date.now()}`; update("providers", [...settings.providers, { id, name: "New endpoint", kind: "openai", base_url: "http://127.0.0.1:8000/v1", model: "", requests_per_minute: null, temperature: 0, max_output_tokens: 2048, remote: false, remote_confirmed: true, has_api_key: false }]); }
+  async function discover(provider: Provider) {
+    try {
+      const payload = await request<{ items: string[] }>(`/providers/${provider.id}/models`, { method: "POST" });
+      setModels({ ...models, [provider.id]: payload.items });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      window.alert(language === "ru"
+        ? `Не удалось получить список моделей для «${provider.name}». Проверьте адрес endpoint и доступность сервиса.\n\n${message}`
+        : `Could not load models for “${provider.name}”. Check the endpoint URL and that the service is running.\n\n${message}`);
+    }
+  }
+  function addProvider() { const id = `provider-${Date.now()}`; update("providers", [...settings.providers, { id, name: "New endpoint", kind: "openai", base_url: "http://127.0.0.1:8000/v1", model: "", enabled: true, requests_per_minute: null, temperature: 0, max_output_tokens: 2048, remote: false, remote_confirmed: true, has_api_key: false }]); }
   function addTemplate() { const id = `template-${Date.now()}`; update("templates", [...settings.templates, { id, name_ru: "Новый шаблон", name_en: "New template", prompt: "Create a faithful Markdown summary in {language}.", builtin: false }]); update("summary_template_id", id); }
 
   return <div className="settings-page"><div className="page-heading"><div><span className="overline">LOCAL-FIRST</span><h1>{language === "ru" ? "Настройки" : "Settings"}</h1><p>{language === "ru" ? "Всё хранится на этом Mac. Секреты — только в Связке ключей." : "Everything stays on this Mac. Secrets are stored only in Keychain."}</p></div><button className="primary-button" onClick={save} disabled={saving}>{saving ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}{language === "ru" ? "Сохранить" : "Save"}</button></div>
@@ -633,18 +781,31 @@ function SettingsView({ settings, setSettings, onSaved, language }: { settings: 
 
       <section className="settings-card"><div className="settings-card-title"><Clock3 size={19} /><div><h2>{language === "ru" ? "Бережная загрузка" : "Respectful downloading"}</h2><p>yt-dlp</p></div></div><div className="field-grid"><label className="field"><span>{language === "ru" ? "Минимальная пауза, сек" : "Minimum delay, sec"}</span><input id="min-delay" name="min-delay" type="number" value={settings.min_download_delay_seconds} onChange={(e) => update("min_download_delay_seconds", Number(e.target.value))} /></label><label className="field"><span>{language === "ru" ? "Максимальная пауза, сек" : "Maximum delay, sec"}</span><input id="max-delay" name="max-delay" type="number" value={settings.max_download_delay_seconds} onChange={(e) => update("max_download_delay_seconds", Number(e.target.value))} /></label></div><label className="field full"><span>cookies.txt</span><input id="cookie-file" name="cookie-file" value={settings.cookie_file} onChange={(e) => update("cookie_file", e.target.value)} placeholder="~/Downloads/cookies.txt" /></label><label className="field full"><span>{language === "ru" ? "Cookies браузера" : "Browser cookies"}</span><select value={settings.cookie_browser} onChange={(e) => update("cookie_browser", e.target.value)}><option value="">{language === "ru" ? "Не использовать" : "Disabled"}</option><option value="chrome">Chrome</option><option value="safari">Safari</option><option value="firefox">Firefox</option></select></label></section>
 
-      <section className="settings-card wide"><div className="settings-card-title"><Sparkles size={19} /><div><h2>{language === "ru" ? "Модели summary" : "Summary models"}</h2><p>Ollama · OpenAI-compatible</p></div><button className="text-button" onClick={addProvider}><Plus size={15} />Endpoint</button></div><div className="provider-grid">{settings.providers.map((provider) => <div className={`provider-card ${settings.active_provider_id === provider.id ? "active" : ""}`} key={provider.id}><div className="provider-top"><button className="provider-radio" onClick={() => update("active_provider_id", provider.id)}><span />{settings.active_provider_id === provider.id ? (language === "ru" ? "По умолчанию" : "Default") : (language === "ru" ? "Выбрать" : "Select")}</button><select value={provider.kind} onChange={(e) => updateProvider(provider.id, { kind: e.target.value as "ollama" | "openai" })}><option value="ollama">Ollama</option><option value="openai">OpenAI-compatible</option></select></div><input className="provider-name" value={provider.name} onChange={(e) => updateProvider(provider.id, { name: e.target.value })} /><label className="field full"><span>Endpoint</span><input value={provider.base_url} onChange={(e) => updateProvider(provider.id, { base_url: e.target.value })} /></label><div className="model-row"><label className="field"><span>{language === "ru" ? "Модель" : "Model"}</span><input list={`models-${provider.id}`} value={provider.model} onChange={(e) => updateProvider(provider.id, { model: e.target.value })} /><datalist id={`models-${provider.id}`}>{models[provider.id]?.map((name) => <option value={name} key={name} />)}</datalist></label><button className="discover-button" onClick={() => discover(provider)} aria-label="Discover models"><RefreshCw size={15} /></button></div><div className="field-grid"><label className="field"><span>RPM</span><input type="number" placeholder="∞" value={provider.requests_per_minute ?? ""} onChange={(e) => updateProvider(provider.id, { requests_per_minute: e.target.value ? Number(e.target.value) : null })} /></label><label className="field"><span>Temperature</span><input type="number" step="0.1" value={provider.temperature} onChange={(e) => updateProvider(provider.id, { temperature: Number(e.target.value) })} /></label></div><label className="field full"><span>API key · Keychain</span><input type="password" value={secret[provider.id] ?? ""} onChange={(e) => setSecretValue({ ...secret, [provider.id]: e.target.value })} placeholder={provider.has_api_key ? "••••••••••••" : "Optional"} /></label><label className="check-row"><input type="checkbox" checked={provider.remote} onChange={(e) => updateProvider(provider.id, { remote: e.target.checked, remote_confirmed: !e.target.checked })} />{language === "ru" ? "Это удалённый endpoint" : "This is a remote endpoint"}</label>{provider.remote ? <label className="check-row privacy-check"><input type="checkbox" checked={provider.remote_confirmed} onChange={(e) => updateProvider(provider.id, { remote_confirmed: e.target.checked })} />{language === "ru" ? "Разрешаю отправку текста этому провайдеру" : "Allow transcript upload to this provider"}</label> : null}</div>)}</div></section>
+      <section className="settings-card wide"><div className="settings-card-title"><Sparkles size={19} /><div><h2>{language === "ru" ? "Источники summary" : "Summary sources"}</h2><p>{language === "ru" ? "Параллельное планирование с отдельными RPM" : "Parallel scheduling with per-source RPM"}</p></div><button className="text-button" onClick={addProvider}><Plus size={15} />Endpoint</button></div><label className="check-row source-pool-toggle"><input type="checkbox" checked={settings.parallel_summary_sources} onChange={(e) => update("parallel_summary_sources", e.target.checked)} />{language === "ru" ? "Распределять фрагменты между всеми включёнными источниками" : "Distribute chunks across all enabled sources"}</label><div className="provider-grid">{settings.providers.map((provider) => { const status = sourceStatus[provider.id]; return <div className={`provider-card ${settings.active_provider_id === provider.id ? "active" : ""}`} key={provider.id}><div className="provider-top"><button className="provider-radio" onClick={() => update("active_provider_id", provider.id)}><span />{settings.active_provider_id === provider.id ? (language === "ru" ? "По умолчанию" : "Default") : (language === "ru" ? "Выбрать" : "Select")}</button><select value={provider.kind} onChange={(e) => updateProvider(provider.id, { kind: e.target.value as "ollama" | "openai" })}><option value="ollama">Ollama</option><option value="openai">OpenAI-compatible</option></select></div><input className="provider-name" value={provider.name} onChange={(e) => updateProvider(provider.id, { name: e.target.value })} /><label className="field full"><span>Endpoint</span><input value={provider.base_url} onChange={(e) => updateProvider(provider.id, { base_url: e.target.value })} /></label><div className="model-row"><label className="field"><span>{language === "ru" ? "Модель" : "Model"}</span><input list={`models-${provider.id}`} value={provider.model} onChange={(e) => updateProvider(provider.id, { model: e.target.value })} /><datalist id={`models-${provider.id}`}>{models[provider.id]?.map((name) => <option value={name} key={name} />)}</datalist></label><button className="discover-button" onClick={() => discover(provider)} aria-label="Discover models"><RefreshCw size={15} /></button></div><div className="field-grid"><label className="field"><span>RPM</span><input type="number" placeholder="∞" value={provider.requests_per_minute ?? ""} onChange={(e) => updateProvider(provider.id, { requests_per_minute: e.target.value ? Number(e.target.value) : null })} /></label><label className="field"><span>Temperature</span><input type="number" step="0.1" value={provider.temperature} onChange={(e) => updateProvider(provider.id, { temperature: Number(e.target.value) })} /></label></div><label className="field full"><span>API key · Keychain</span><input type="password" value={secret[provider.id] ?? ""} onChange={(e) => setSecretValue({ ...secret, [provider.id]: e.target.value })} placeholder={provider.has_api_key ? "••••••••••••" : "Optional"} /></label><label className="check-row"><input type="checkbox" checked={provider.enabled} onChange={(e) => updateProvider(provider.id, { enabled: e.target.checked })} />{language === "ru" ? "Участвует в параллельном пуле" : "Included in parallel pool"}</label><div className="source-status">{status ? <>{status.in_flight ? `${language === "ru" ? "В работе" : "In flight"}: ${status.in_flight}` : `${language === "ru" ? "За минуту" : "Last minute"}: ${status.requests_in_window}${status.requests_per_minute ? ` / ${status.requests_per_minute} RPM` : ""}`}{status.waiting ? ` · ${language === "ru" ? "ожидает" : "waiting"}: ${status.waiting}` : ""}{status.retry_after_seconds ? ` · ${language === "ru" ? "лимит через" : "limit clears in"} ${status.retry_after_seconds}s` : ""}{status.failed ? ` · ${language === "ru" ? "ошибок" : "errors"}: ${status.failed}` : ""}</> : (language === "ru" ? "Статус загружается…" : "Loading status…")}</div><label className="check-row"><input type="checkbox" checked={provider.remote} onChange={(e) => updateProvider(provider.id, { remote: e.target.checked, remote_confirmed: !e.target.checked })} />{language === "ru" ? "Это удалённый endpoint" : "This is a remote endpoint"}</label>{provider.remote ? <label className="check-row privacy-check"><input type="checkbox" checked={provider.remote_confirmed} onChange={(e) => updateProvider(provider.id, { remote_confirmed: e.target.checked })} />{language === "ru" ? "Разрешаю отправку текста этому провайдеру" : "Allow transcript upload to this provider"}</label> : null}</div>; })}</div></section>
 
       <section className="settings-card"><div className="settings-card-title"><FileText size={19} /><div><h2>{language === "ru" ? "Суммаризация" : "Summarization"}</h2><p>Full coverage by default</p></div></div><label className="field full"><span>{language === "ru" ? "Режим" : "Mode"}</span><select id="summary-mode" name="summary-mode" value={settings.summary_mode} onChange={(e) => update("summary_mode", e.target.value as "complete" | "cluster")}><option value="complete">{language === "ru" ? "Полное покрытие (map-reduce)" : "Complete coverage (map-reduce)"}</option><option value="cluster">{language === "ru" ? "Быстрый кластерный (lossy)" : "Fast clustering (lossy)"}</option></select></label><label className="field full"><span>{language === "ru" ? "Шаблон" : "Template"}</span><select id="summary-template" name="summary-template" value={settings.summary_template_id} onChange={(e) => update("summary_template_id", e.target.value)}>{settings.templates.map((template) => <option key={template.id} value={template.id}>{language === "ru" ? template.name_ru : template.name_en}</option>)}</select></label><label className="field full"><span>{language === "ru" ? "Размер фрагмента, символов" : "Chunk size, characters"}</span><input id="chunk-chars" name="chunk-chars" type="number" value={settings.chunk_characters} onChange={(e) => update("chunk_characters", Number(e.target.value))} /></label></section>
 
       <section className="settings-card"><div className="settings-card-title"><Languages size={19} /><div><h2>{language === "ru" ? "Распознавание аудио" : "Audio transcription"}</h2><p>Meeting Transcriber · CoreML</p></div></div><label className="field full"><span>{language === "ru" ? "Движок" : "Engine"}</span><select id="asr-engine" name="asr-engine" value={settings.asr_engine} onChange={(e) => update("asr_engine", e.target.value as "whisperkit" | "parakeet")}><option value="whisperkit">WhisperKit</option><option value="parakeet">Parakeet TDT v3</option></select></label><label className="field full"><span>Automation API</span><input id="transcriber-url" name="transcriber-url" value={settings.meeting_transcriber_url} onChange={(e) => update("meeting_transcriber_url", e.target.value)} /></label><label className="check-row"><input type="checkbox" checked={settings.diarization_enabled} onChange={(e) => update("diarization_enabled", e.target.checked)} />{language === "ru" ? "Разделять спикеров" : "Speaker diarization"}</label><label className="check-row"><input type="checkbox" checked={settings.keep_audio} onChange={(e) => update("keep_audio", e.target.checked)} />{language === "ru" ? "Сохранять аудио" : "Keep audio files"}</label></section>
+      <section className="settings-card"><div className="settings-card-title"><Volume2 size={19} /><div><h2>{language === "ru" ? "Озвучивание текста" : "Text-to-Speech"}</h2><p>macOS Speech · local M4A</p></div></div><label className="field full"><span>{language === "ru" ? "Движок" : "Engine"}</span><select value={settings.tts_engine} onChange={(e) => update("tts_engine", e.target.value as "macos_say")}><option value="macos_say">macOS Speech</option></select></label><div className="field-grid"><label className="field"><span>{language === "ru" ? "Голос (пусто — системный)" : "Voice (blank = system default)"}</span><input value={settings.tts_voice} onChange={(e) => update("tts_voice", e.target.value)} placeholder="Milena" /></label><label className="field"><span>{language === "ru" ? "Скорость, слов/мин" : "Rate, words/min"}</span><input type="number" min="80" max="500" value={settings.tts_rate} onChange={(e) => update("tts_rate", Number(e.target.value))} /></label></div></section>
 
-      <section className="settings-card wide"><div className="settings-card-title"><FileText size={19} /><div><h2>{language === "ru" ? "Шаблоны summary" : "Summary templates"}</h2><p>{language === "ru" ? "Встроенные и пользовательские инструкции" : "Built-in and custom instructions"}</p></div><button className="text-button" onClick={addTemplate}><Plus size={15} />{language === "ru" ? "Шаблон" : "Template"}</button></div><div className="template-grid">{settings.templates.map((template) => <div className={`template-card ${settings.summary_template_id === template.id ? "active" : ""}`} key={template.id}><div className="template-title-row"><button className="provider-radio" onClick={() => update("summary_template_id", template.id)}><span />{settings.summary_template_id === template.id ? (language === "ru" ? "Активный" : "Active") : (language === "ru" ? "Выбрать" : "Select")}</button>{!template.builtin ? <button className="mini-button danger-hover" onClick={() => update("templates", settings.templates.filter((item) => item.id !== template.id))} aria-label="Delete template"><Trash2 size={13} /></button> : null}</div><div className="field-grid"><label className="field"><span>RU</span><input value={template.name_ru} onChange={(e) => updateTemplate(template.id, { name_ru: e.target.value })} disabled={template.builtin} /></label><label className="field"><span>EN</span><input value={template.name_en} onChange={(e) => updateTemplate(template.id, { name_en: e.target.value })} disabled={template.builtin} /></label></div><label className="field full"><span>Prompt</span><textarea value={template.prompt} onChange={(e) => updateTemplate(template.id, { prompt: e.target.value })} disabled={template.builtin} rows={4} /></label></div>)}</div></section>
+      <section className="settings-card wide"><div className="settings-card-title"><FileText size={19} /><div><h2>{language === "ru" ? "Шаблоны промптов" : "Prompt templates"}</h2><p>{language === "ru" ? "Встроенные и пользовательские инструкции для summary и отдельных запусков" : "Built-in and custom instructions for summaries and standalone runs"}</p></div><button className="text-button" onClick={addTemplate}><Plus size={15} />{language === "ru" ? "Шаблон" : "Template"}</button></div><div className="template-grid">{settings.templates.map((template) => <div className={`template-card ${settings.summary_template_id === template.id ? "active" : ""}`} key={template.id}><div className="template-title-row"><button className="provider-radio" onClick={() => update("summary_template_id", template.id)}><span />{settings.summary_template_id === template.id ? (language === "ru" ? "Активный" : "Active") : (language === "ru" ? "Выбрать" : "Select")}</button>{!template.builtin ? <button className="mini-button danger-hover" onClick={() => update("templates", settings.templates.filter((item) => item.id !== template.id))} aria-label="Delete template"><Trash2 size={13} /></button> : null}</div><div className="field-grid"><label className="field"><span>RU</span><input value={template.name_ru} onChange={(e) => updateTemplate(template.id, { name_ru: e.target.value })} disabled={template.builtin} /></label><label className="field"><span>EN</span><input value={template.name_en} onChange={(e) => updateTemplate(template.id, { name_en: e.target.value })} disabled={template.builtin} /></label></div><label className="field full"><span>Prompt</span><textarea value={template.prompt} onChange={(e) => updateTemplate(template.id, { prompt: e.target.value })} disabled={template.builtin} rows={4} /></label></div>)}</div></section>
     </div>
   </div>;
 }
 
-function SystemStatus({ health, settings, language, onRescan }: { health: Health; settings: Settings | null; language: "ru" | "en"; onRescan: () => Promise<void> }) {
+function SourceUpdatePanel({ language }: { language: "ru" | "en" }) {
+  const [status, setStatus] = useState<SourceUpdate | null>(null);
+  const [action, setAction] = useState<"idle" | "checking" | "pulling" | "restarting">("checking");
+  const [error, setError] = useState<string | null>(null);
+  const check = useCallback(async () => { setAction("checking"); setError(null); try { setStatus(await request<SourceUpdate>("/system/source-update")); setAction("idle"); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setAction("idle"); } }, []);
+  useEffect(() => { void check(); }, [check]);
+  async function pull() { setAction("pulling"); setError(null); try { setStatus(await request<SourceUpdate>("/system/source-update/pull", { method: "POST" })); setAction("idle"); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setAction("idle"); } }
+  async function restart() { setAction("restarting"); try { await request("/system/restart", { method: "POST" }); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setAction("idle"); } }
+  const busy = action !== "idle";
+  return <section className="info-card status-info"><h2>{language === "ru" ? "Обновление приложения" : "Application updates"}</h2>{status ? <><div className="detail-row"><span>{language === "ru" ? "Ветка" : "Branch"}</span><strong>{status.branch ?? "—"}</strong></div><div className="detail-row"><span>{language === "ru" ? "Рабочее дерево" : "Working tree"}</span><strong>{status.clean === null ? "—" : status.clean ? (language === "ru" ? "Чистое" : "Clean") : (language === "ru" ? "Есть локальные изменения" : "Local changes")}</strong></div><div className="detail-row"><span>{language === "ru" ? "Upstream-коммиты" : "Upstream commits"}</span><strong>{status.upstream ? `+${status.behind} / −${status.ahead}` : "—"}</strong></div><p>{status.diagnostic}</p></> : <p>{language === "ru" ? "Проверяем Git-источник…" : "Checking Git source…"}</p>}{error ? <p className="error-text">{error}</p> : null}<div className="page-actions"><button className="secondary-button" onClick={check} disabled={busy}>{action === "checking" ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}{language === "ru" ? "Проверить" : "Check"}</button><button className="secondary-button" onClick={pull} disabled={!status?.can_pull || busy}>{action === "pulling" ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}{language === "ru" ? "Сделать pull" : "Pull updates"}</button>{status?.restart_required ? <button className="secondary-button" onClick={restart} disabled={busy}>{action === "restarting" ? <LoaderCircle size={16} className="spin" /> : <RotateCcw size={16} />}{language === "ru" ? "Перезапустить API" : "Restart API"}</button> : null}</div></section>;
+}
+
+function SystemStatus({ health, settings, language, onRescan }: { health: Health | null; settings: Settings | null; language: "ru" | "en"; onRescan: () => Promise<void> }) {
   const names: Record<string, string> = { yt_dlp: "yt-dlp", ffmpeg: "ffmpeg", native_transcriber: "Meeting Transcriber", cookies: "YouTube cookies" };
   const [updateState, setUpdateState] = useState<"idle" | "running" | "done">("idle");
   async function updateYtDlp() { setUpdateState("running"); await request("/system/yt-dlp/update", { method: "POST" }); setUpdateState("done"); }
