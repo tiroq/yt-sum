@@ -69,9 +69,30 @@ async def health() -> dict:
     settings = context().settings_repo.load()
     native_status = await MeetingTranscriberBridge(settings).health()
     cookie_file = Path(settings.cookie_file).expanduser() if settings.cookie_file else None
+    jobs = context().storage().list_jobs()
+
+    def queue_summary(kinds: set[str]) -> dict:
+        lane = [job for job in jobs if job.kind in kinds]
+        active = [job for job in lane if job.status == "processing"]
+        queued = [job for job in lane if job.status == "queued"]
+        return {
+            "total": len(lane),
+            "queued": len(queued),
+            "processing": len(active),
+            "completed": sum(job.status == "complete" for job in lane),
+            "failed": sum(job.status == "attention" for job in lane),
+            "cancelled": sum(job.status == "cancelled" for job in lane),
+            "current_stage": active[0].stage if active else None,
+            "current_video_id": active[0].video_id if active else None,
+            "current_progress": active[0].progress if active else None,
+        }
     return {
         "status": "ok",
         "queue_paused": context().queue.paused,
+        "queues": {
+            "download": queue_summary({"process", "refresh"}),
+            "llm": queue_summary({"summarize", "prompt", "tts"}),
+        },
         "library": str(context().storage().library_dir),
         "components": {
             "yt_dlp": {"ready": True, "version": yt_dlp.version.__version__},
