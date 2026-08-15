@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import shutil
+import os
+import signal
 import subprocess
 import sys
 import asyncio
@@ -14,18 +16,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .context import ApplicationContext
-from .downloader import normalize_youtube_url
+from .downloader import YouTubeClient, is_playlist_url, normalize_youtube_url
+from .git_update import GitUpdateError, pull_source_update, source_update_status
 from .keychain import get_secret, set_secret
 from .models import (
     AddVideosRequest,
     AppSettings,
+    CreatePromptRequest,
     CreateSummaryRequest,
+    CreateSpeechRequest,
     ProviderSecretRequest,
     ReorderJobsRequest,
     UpdateVideoRequest,
 )
 from .providers import ProviderClient, ProviderError
 from .transcriber import MeetingTranscriberBridge
+from .tts import MacSayTTS
 
 
 _context: ApplicationContext | None = None
@@ -61,7 +67,7 @@ app.add_middleware(
 @app.get("/api/health")
 async def health() -> dict:
     settings = context().settings_repo.load()
-    native_ready = await MeetingTranscriberBridge(settings).health()
+    native_status = await MeetingTranscriberBridge(settings).health()
     cookie_file = Path(settings.cookie_file).expanduser() if settings.cookie_file else None
     return {
         "status": "ok",
@@ -70,7 +76,8 @@ async def health() -> dict:
         "components": {
             "yt_dlp": {"ready": True, "version": yt_dlp.version.__version__},
             "ffmpeg": {"ready": shutil.which("ffmpeg") is not None},
-            "native_transcriber": {"ready": native_ready, "engine": settings.asr_engine},
+            "native_transcriber": {"engine": settings.asr_engine, **native_status},
+            "text_to_speech": {"ready": MacSayTTS(settings).ready(), "engine": settings.tts_engine},
             "cookies": {"ready": bool((cookie_file and cookie_file.exists()) or settings.cookie_browser), "browser": settings.cookie_browser or None},
         },
     }
@@ -87,6 +94,10 @@ def list_videos(
     return {"items": context().storage().list_videos(query=query, status=status, favorite=favorite, archived=archived, sort=sort)}
 
 
+@app.get("/api/playlists")
+def list_playlists() -> dict:
+    return {"items": context().storage().list_playlists()}
+
 
 @app.post("/api/videos", status_code=202)
 def add_videos(request: AddVideosRequest) -> dict:
@@ -95,6 +106,18 @@ def add_videos(request: AddVideosRequest) -> dict:
     errors = []
     seen: set[str] = set()
     for raw_url in request.urls:
+        if is_playlist_url(raw_url):
+            try:
+                playlist = YouTubeClient(context().settings_repo.load()).extract_playlist(raw_url)
+                added, already_present = context().storage().import_playlist(
+                    playlist.meta,
+                    [(entry.video_id, entry.source_url, entry.position) for entry in playlist.entries],
+                )
+                jobs.extend(job.model_dump(mode="json") for job in added)
+                existing.extend(already_present)
+            except Exception as error:
+                errors.append({"url": raw_url, "error": str(error)})
+            continue
         try:
             video_id, url = normalize_youtube_url(raw_url)
         except ValueError as error:
@@ -187,6 +210,57 @@ def create_summary(video_id: str, request: CreateSummaryRequest) -> dict:
     return job.model_dump(mode="json")
 
 
+@app.post("/api/videos/{video_id}/prompts", status_code=202)
+def create_prompt(video_id: str, request: CreatePromptRequest) -> dict:
+    detail = context().storage().get_video(video_id)
+    if not detail or not detail.transcript_markdown:
+        raise HTTPException(409, "Transcript is not ready")
+    if not any(item.id == request.template_id for item in context().settings_repo.load().templates):
+        raise HTTPException(404, "Prompt template not found")
+    overrides = {key: value for key, value in request.model_dump().items() if value is not None}
+    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="prompt", overrides=overrides)
+    context().queue.notify()
+    return job.model_dump(mode="json")
+
+
+@app.get("/api/videos/{video_id}/prompts/{artifact_id}")
+def get_prompt_artifact(video_id: str, artifact_id: str) -> dict:
+    result = context().storage().read_prompt_artifact(video_id, artifact_id)
+    if not result:
+        raise HTTPException(404, "Prompt artifact not found")
+    artifact, markdown = result
+    return {"artifact": artifact.model_dump(mode="json"), "markdown": markdown}
+
+
+@app.post("/api/videos/{video_id}/speech", status_code=202)
+def create_speech(video_id: str, request: CreateSpeechRequest) -> dict:
+    detail = context().storage().get_video(video_id)
+    if not detail:
+        raise HTTPException(404, "Video not found")
+    markdown = detail.transcript_markdown if request.artifact == "transcript" else detail.summary_markdown
+    if not markdown.strip():
+        raise HTTPException(409, f"{request.artifact.capitalize()} is not ready")
+    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="tts", overrides={"artifact": request.artifact})
+    context().queue.notify()
+    return job.model_dump(mode="json")
+
+
+@app.get("/api/videos/{video_id}/speech/{artifact}")
+def get_speech(video_id: str, artifact: str):
+    if artifact not in {"transcript", "summary"}:
+        raise HTTPException(404, "Audio not found")
+    detail = context().storage().get_video(video_id)
+    if not detail or not detail.folder:
+        raise HTTPException(404, "Audio not found")
+    item = next((item for item in detail.meta.audio_artifacts if item.artifact == artifact), None)
+    if not item:
+        raise HTTPException(404, "Audio not found")
+    path = Path(detail.folder) / item.file
+    if not path.exists() or path.parent.resolve() != Path(detail.folder).resolve():
+        raise HTTPException(404, "Audio not found")
+    return FileResponse(path, media_type="audio/mp4")
+
+
 @app.delete("/api/videos/{video_id}")
 def delete_video(video_id: str, delete_files: bool = Query(False)) -> dict:
     if not context().storage().delete_video(video_id, delete_files):
@@ -196,7 +270,20 @@ def delete_video(video_id: str, delete_files: bool = Query(False)) -> dict:
 
 @app.get("/api/jobs")
 def list_jobs() -> dict:
-    return {"paused": context().queue.paused, "items": [job.model_dump(mode="json") for job in context().storage().list_jobs()]}
+    items = [job.model_dump(mode="json") for job in context().storage().list_jobs()]
+    download = [item for item in items if item["kind"] in {"process", "refresh"}]
+    llm = [item for item in items if item["kind"] in {"summarize", "prompt", "tts"}]
+    return {"paused": context().queue.paused, "items": items, "download_items": download, "llm_items": llm}
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_finished_job(job_id: str) -> dict:
+    deleted = context().storage().delete_finished_job(job_id)
+    if deleted is False:
+        raise HTTPException(404, "Job not found")
+    if deleted is None:
+        raise HTTPException(409, "Only completed or failed jobs can be removed")
+    return {"deleted": True}
 
 
 @app.post("/api/jobs/pause")
@@ -209,6 +296,12 @@ def pause_jobs() -> dict:
 def resume_jobs() -> dict:
     context().queue.resume()
     return {"paused": False}
+
+
+@app.post("/api/jobs/stop")
+def stop_jobs() -> dict:
+    """Cancel every queued or currently running job without deleting history."""
+    return {"cancelled": context().queue.cancel_all()}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -269,6 +362,12 @@ async def provider_models(provider_id: str) -> dict:
     return {"items": models}
 
 
+@app.get("/api/providers/status")
+def provider_statuses() -> dict:
+    settings = context().settings_repo.load()
+    return {"items": ProviderClient.statuses(settings.providers)}
+
+
 @app.post("/api/library/rescan")
 def rescan_library() -> dict:
     return {"indexed": context().storage().rescan()}
@@ -289,3 +388,32 @@ async def update_yt_dlp() -> dict:
     if result.returncode != 0:
         raise HTTPException(500, (result.stderr or result.stdout)[-1500:])
     return {"updated": True, "restart_required": True, "message": (result.stdout or "yt-dlp updated")[-1000:]}
+
+
+@app.get("/api/system/source-update")
+async def get_source_update_status() -> dict:
+    try:
+        return await asyncio.to_thread(source_update_status)
+    except GitUpdateError as error:
+        raise HTTPException(503, str(error)) from error
+
+
+@app.post("/api/system/source-update/pull")
+async def pull_source() -> dict:
+    try:
+        return await asyncio.to_thread(pull_source_update)
+    except GitUpdateError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.post("/api/system/restart")
+async def restart_application() -> dict:
+    if os.environ.get("YTSUM_RESTART_ALLOWED") != "1":
+        raise HTTPException(409, "Restart is available only when the app is started with scripts/dev.sh.")
+
+    async def stop_after_response() -> None:
+        await asyncio.sleep(0.25)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    asyncio.create_task(stop_after_response())
+    return {"restarting": True, "message": "The API is stopping now; its supervisor will start it again."}
