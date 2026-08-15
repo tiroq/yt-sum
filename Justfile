@@ -32,7 +32,7 @@ db-clean confirm="":
     @test "{{confirm}}" = "RESET" || test "{{confirm}}" = "confirm=RESET" || { echo 'Refusing to clean the database. Run: just db-clean confirm=RESET' >&2; exit 2; }
     @db_dir="$(.venv/bin/python -c 'import sys; from pathlib import Path; sys.path.insert(0, "backend"); from ytsum.settings import SettingsRepository; print(Path(SettingsRepository().load().library_dir).expanduser())')"; \
     db_path="$db_dir/.yt-sum/index.sqlite3"; \
-    test -f "$db_path" || { echo "Database not found: $db_path" >&2; exit 1; }; \
+    if test ! -f "$db_path"; then echo "Database already clean; a new index will be created on the next app start: $db_path"; exit 0; fi; \
     backup_dir="$db_dir/.yt-sum/backups/db-$(date -u +%Y%m%dT%H%M%SZ)"; \
     mkdir -p "$backup_dir"; \
     cp -p "$db_path" "$backup_dir/index.sqlite3"; \
