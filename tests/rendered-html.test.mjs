@@ -50,6 +50,9 @@ test("starter preview is fully removed from source", async () => {
   assert.match(page, /Открыть папку артефактов/);
   assert.match(page, /Переобработать/);
   assert.match(page, /onReprocess=\{refreshVideo\}/);
+  const refreshVideo = page.match(/async function refreshVideo\(\) \{[\s\S]*?\n {2}\}\n\n {2}async function openArtifactsFolder/);
+  assert.ok(refreshVideo);
+  assert.doesNotMatch(refreshVideo[0], /setQueueOpen/);
   assert.match(layout, /YT Sum — Local YouTube Intelligence/);
   assert.doesNotMatch(page + layout + packageJson, /codex-preview|_sites-preview|react-loading-skeleton/);
 });
