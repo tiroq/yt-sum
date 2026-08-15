@@ -19,23 +19,41 @@ class AsyncRateLimiter:
         self.requests_per_minute = requests_per_minute
         self._timestamps: deque[float] = deque()
         self._lock = asyncio.Lock()
+        self.waiting = 0
 
     async def acquire(self) -> None:
         if not self.requests_per_minute:
             return
         async with self._lock:
+            self.waiting += 1
             while True:
                 now = time.monotonic()
                 while self._timestamps and now - self._timestamps[0] >= 60:
                     self._timestamps.popleft()
                 if len(self._timestamps) < self.requests_per_minute:
                     self._timestamps.append(now)
+                    self.waiting -= 1
                     return
                 await asyncio.sleep(max(0.05, 60 - (now - self._timestamps[0])))
+
+    def status(self) -> dict[str, int | float | None]:
+        now = time.monotonic()
+        while self._timestamps and now - self._timestamps[0] >= 60:
+            self._timestamps.popleft()
+        retry_after = 0.0
+        if self.requests_per_minute and len(self._timestamps) >= self.requests_per_minute:
+            retry_after = max(0.0, 60 - (now - self._timestamps[0]))
+        return {
+            "requests_per_minute": self.requests_per_minute,
+            "requests_in_window": len(self._timestamps),
+            "waiting": self.waiting,
+            "retry_after_seconds": round(retry_after, 1),
+        }
 
 
 class ProviderClient:
     _limiters: dict[str, AsyncRateLimiter] = {}
+    _activity: dict[str, dict[str, int | str | None]] = {}
 
     def __init__(self, provider: ProviderSettings) -> None:
         self.provider = provider
@@ -44,12 +62,31 @@ class ProviderClient:
             current = AsyncRateLimiter(provider.requests_per_minute)
             self._limiters[provider.id] = current
         self.limiter = current
+        self._activity.setdefault(provider.id, {"in_flight": 0, "completed": 0, "failed": 0, "last_error": None})
+
+    @classmethod
+    def statuses(cls, providers: list[ProviderSettings]) -> list[dict]:
+        result = []
+        for provider in providers:
+            client = cls(provider)
+            activity = cls._activity[provider.id]
+            result.append({"id": provider.id, "enabled": provider.enabled, **client.limiter.status(), **activity})
+        return result
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if secret := get_secret(self.provider.id):
             headers["Authorization"] = f"Bearer {secret}"
         return headers
+
+    def _openai_base_url(self) -> str:
+        """Accept either an API root or a copied chat-completions URL.
+
+        The settings field normally contains e.g. ``https://api.example/v1``.
+        Pasting the full endpoint is common, so remove that final route before
+        composing both model-discovery and chat URLs.
+        """
+        return self.provider.base_url.removesuffix("/chat/completions").rstrip("/")
 
     def _assert_privacy(self) -> None:
         if self.provider.remote and not self.provider.remote_confirmed:
@@ -64,11 +101,12 @@ class ProviderClient:
                     response = await client.get(f"{self.provider.base_url}/api/tags", headers=self._headers())
                     response.raise_for_status()
                     return sorted(model["name"] for model in response.json().get("models", []) if model.get("name"))
-                response = await client.get(f"{self.provider.base_url}/models", headers=self._headers())
+                response = await client.get(f"{self._openai_base_url()}/models", headers=self._headers())
                 response.raise_for_status()
                 return sorted(item["id"] for item in response.json().get("data", []) if item.get("id"))
         except (httpx.HTTPError, KeyError, ValueError) as error:
-            raise ProviderError(f"Unable to fetch models from {self.provider.name}: {error}") from error
+            detail = str(error) or type(error).__name__
+            raise ProviderError(f"Unable to fetch models from {self.provider.name}: {detail}") from error
 
     async def chat(self, *, system: str, user: str, model: str | None = None) -> str:
         self._assert_privacy()
@@ -76,6 +114,8 @@ class ProviderClient:
         if not selected_model:
             raise ProviderError(f"No model selected for {self.provider.name}")
         await self.limiter.acquire()
+        activity = self._activity[self.provider.id]
+        activity["in_flight"] = int(activity["in_flight"]) + 1
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30)) as client:
                 if self.provider.kind == "ollama":
@@ -93,7 +133,7 @@ class ProviderClient:
                     content = response.json().get("message", {}).get("content", "")
                 else:
                     response = await client.post(
-                        f"{self.provider.base_url}/chat/completions",
+                        f"{self._openai_base_url()}/chat/completions",
                         headers=self._headers(),
                         json={
                             "model": selected_model,
@@ -105,8 +145,16 @@ class ProviderClient:
                     response.raise_for_status()
                     content = response.json()["choices"][0]["message"]["content"]
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as error:
-            raise ProviderError(f"Summary request failed for {self.provider.name}: {error}") from error
+            detail = str(error) or type(error).__name__
+            activity["failed"] = int(activity["failed"]) + 1
+            activity["last_error"] = detail
+            raise ProviderError(f"Summary request failed for {self.provider.name}: {detail}") from error
+        finally:
+            activity["in_flight"] = max(0, int(activity["in_flight"]) - 1)
         if not content or not content.strip():
+            activity["failed"] = int(activity["failed"]) + 1
+            activity["last_error"] = "Empty response"
             raise ProviderError(f"{self.provider.name} returned an empty response")
+        activity["completed"] = int(activity["completed"]) + 1
+        activity["last_error"] = None
         return content.strip()
-
