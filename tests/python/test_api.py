@@ -169,6 +169,26 @@ def test_local_api_removes_only_finished_job_history(monkeypatch, tmp_path: Path
         assert client.delete(f"/api/jobs/{job['id']}").status_code == 404
 
 
+def test_video_history_clear_removes_inactive_rows_but_keeps_active_work(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    from ytsum import api
+
+    api._context = None
+    with TestClient(api.app) as client:
+        client.post("/api/jobs/pause")
+        job = client.post("/api/videos", json={"urls": ["https://youtu.be/Gn64NNr3bqU"]}).json()["jobs"][0]
+        storage = api.context().storage()
+        storage.update_job(job["id"], status="cancelled", execution_state="cancelled")
+        active = storage.enqueue("Gn64NNr3bqU", "https://youtu.be/Gn64NNr3bqU", kind="refresh")
+
+        response = client.delete("/api/videos/Gn64NNr3bqU/jobs")
+
+        assert response.json() == {"deleted": 1}
+        remaining = client.get("/api/jobs").json()["items"]
+        assert [item["id"] for item in remaining] == [active.id]
+
+
 def test_local_api_can_archive_and_restore_a_video(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))

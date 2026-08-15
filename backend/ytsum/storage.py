@@ -826,7 +826,7 @@ class LibraryStorage:
         return self._row_to_job(row) if row else None
 
     def delete_finished_job(self, job_id: str) -> bool | None:
-        """Delete one terminal history record, never a video's artifacts.
+        """Delete one inactive history record, never a video's artifacts.
 
         ``None`` distinguishes an active job from a job that no longer exists,
         so the API can return a useful conflict response instead of racing the
@@ -836,7 +836,7 @@ class LibraryStorage:
             row = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row:
                 return False
-            if row["status"] not in {"complete", "attention"}:
+            if row["status"] in {"queued", "processing"}:
                 return None
             connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
 
@@ -844,6 +844,22 @@ class LibraryStorage:
         # failure-to-clean-up non-fatal: the history record is already gone.
         (self.logs_dir / f"{job_id}.log").unlink(missing_ok=True)
         return True
+
+    def delete_inactive_jobs(self, video_id: str) -> int:
+        """Delete every non-active processing history row for one video."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id FROM jobs WHERE video_id=? AND status NOT IN ('queued', 'processing')""",
+                (video_id,),
+            ).fetchall()
+            if rows:
+                connection.execute(
+                    """DELETE FROM jobs WHERE video_id=? AND status NOT IN ('queued', 'processing')""",
+                    (video_id,),
+                )
+        for row in rows:
+            (self.logs_dir / f"{row['id']}.log").unlink(missing_ok=True)
+        return len(rows)
 
     def update_job(self, job_id: str, **changes: Any) -> JobRecord | None:
         allowed = {"status", "stage", "progress", "position", "attempts", "error", "log_json", "stage_log_json", "requests_planned", "requests_completed", "summary_source", "provider_id", "provider_name", "model", "overrides_json", "execution_state", "waiting_for_json", "priority"}

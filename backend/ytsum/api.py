@@ -437,6 +437,13 @@ def stop_jobs() -> dict:
     return {"cancelled": context().queue.cancel_all()}
 
 
+@app.delete("/api/videos/{video_id}/jobs")
+def clear_video_history(video_id: str) -> dict:
+    if not context().storage().video_exists(video_id):
+        raise HTTPException(404, "Video not found")
+    return {"deleted": context().storage().delete_inactive_jobs(video_id)}
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: str) -> dict:
     job = context().storage().get_job(job_id)
