@@ -300,6 +300,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .queue-stat-grid small { color: var(--muted); font-size: 9px; }
 .queue-current-stage { margin: 13px 0 0; color: var(--muted); font-size: 11px; }
 .status-info { max-width: 1180px; }
+.status-section { flex: none; }
+.status-layout > .status-info { width: 100%; margin: 0 auto; }
 .toast { position: fixed; z-index: 70; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: min(600px, calc(100vw - 30px)); display: flex; align-items: center; gap: 9px; padding: 11px 13px; color: #8d332d; background: #fff3f1; border: 1px solid #efc9c4; border-radius: 11px; box-shadow: var(--shadow); font-size: 11px; }
 .toast span { white-space: pre-wrap; }
 .toast button { border: 0; background: transparent; cursor: pointer; }
