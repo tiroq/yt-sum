@@ -24,10 +24,17 @@ class AsyncRateLimiter:
         self._timestamps: deque[float] = deque()
         self._lock = asyncio.Lock()
         self.waiting = 0
+        self._next_allowed_at = 0.0
 
     def _prune(self, now: float) -> None:
         while self._timestamps and now - self._timestamps[0] >= 60:
             self._timestamps.popleft()
+
+    @property
+    def interval_seconds(self) -> float:
+        if not self.requests_per_minute:
+            return 0.0
+        return 60.0 / self.requests_per_minute
 
     async def acquire(self) -> None:
         if not self.requests_per_minute:
@@ -38,10 +45,13 @@ class AsyncRateLimiter:
                 async with self._lock:
                     now = time.monotonic()
                     self._prune(now)
-                    if len(self._timestamps) < self.requests_per_minute:
+                    spacing_delay = max(0.0, self._next_allowed_at - now)
+                    if len(self._timestamps) < self.requests_per_minute and not spacing_delay:
                         self._timestamps.append(now)
+                        self._next_allowed_at = now + self.interval_seconds
                         return
-                    delay = max(0.05, 60 - (now - self._timestamps[0]))
+                    window_delay = 60 - (now - self._timestamps[0]) if len(self._timestamps) >= self.requests_per_minute else 0.0
+                    delay = max(0.05, spacing_delay, window_delay)
                 await asyncio.sleep(delay)
         finally:
             self.waiting = max(0, self.waiting - 1)
@@ -49,9 +59,10 @@ class AsyncRateLimiter:
     def retry_after_seconds(self) -> float:
         now = time.monotonic()
         self._prune(now)
+        spacing_delay = max(0.0, self._next_allowed_at - now) if self.requests_per_minute else 0.0
         if self.requests_per_minute and len(self._timestamps) >= self.requests_per_minute:
-            return max(0.0, 60 - (now - self._timestamps[0]))
-        return 0.0
+            return max(spacing_delay, 60 - (now - self._timestamps[0]))
+        return spacing_delay
 
     def status(self) -> dict[str, int | float | None]:
         now = time.monotonic()
@@ -62,6 +73,7 @@ class AsyncRateLimiter:
             "requests_in_window": len(self._timestamps),
             "waiting": self.waiting,
             "retry_after_seconds": round(retry_after, 1),
+            "request_interval_seconds": round(self.interval_seconds, 1),
         }
 
 
@@ -201,6 +213,7 @@ class ProviderClient:
             "in_flight": int(activity["in_flight"]),
             "requests_in_window": len(self.limiter._timestamps),
             "requests_per_minute": self.provider.requests_per_minute or 0,
+            "request_interval_seconds": self.limiter.interval_seconds,
             "tokens_in_window": self.token_limiter.tokens_in_window(),
             "tokens_per_minute": self.provider.tokens_per_minute,
             "token_limit_exceeded": token_limit_exceeded,

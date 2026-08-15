@@ -109,6 +109,7 @@ async def health() -> dict:
             "owners": [],
             "requests_per_minute": provider_status["requests_per_minute"],
             "requests_in_window": provider_status["requests_in_window"],
+            "request_interval_seconds": provider_status["request_interval_seconds"],
             "tokens_per_minute": provider_status["tokens_per_minute"],
             "tokens_in_window": provider_status["tokens_in_window"],
             "token_retry_after_seconds": provider_status["token_retry_after_seconds"],

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from ytsum.models import AppSettings, ProviderSettings, SummaryTemplate
-from ytsum.providers import ProviderClient, ProviderError
+from ytsum.providers import AsyncRateLimiter, ProviderClient, ProviderError
 from ytsum.summarizer import Summarizer, split_text, strip_frontmatter
 
 
@@ -44,6 +44,30 @@ def test_provider_rejects_request_above_tpm_limit() -> None:
     )
     with pytest.raises(ProviderError, match="above the 10 TPM limit"):
         asyncio.run(ProviderClient(provider).chat(system="system", user="user", estimated_tokens=11))
+
+
+def test_rpm_limiter_spaces_requests_even_when_window_has_capacity(monkeypatch) -> None:
+    now = 1000.0
+    sleeps: list[float] = []
+
+    def fake_monotonic() -> float:
+        return now
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr("ytsum.providers.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("ytsum.providers.asyncio.sleep", fake_sleep)
+    limiter = AsyncRateLimiter(5)
+
+    asyncio.run(limiter.acquire())
+    asyncio.run(limiter.acquire())
+
+    assert sleeps == [12.0]
+    assert limiter.status()["requests_in_window"] == 2
+    assert limiter.status()["request_interval_seconds"] == 12.0
 
 
 def test_scheduler_retries_a_failed_source_on_another_source(monkeypatch) -> None:
