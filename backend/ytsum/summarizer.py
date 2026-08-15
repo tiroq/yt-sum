@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .models import AppSettings, ProviderSettings, SummaryTemplate
-from .providers import ProviderClient, ProviderError
+from .providers import ProviderClient, ProviderError, estimate_chat_tokens
 
 
 SYSTEM_PROMPT = "You summarize source material faithfully. Never invent claims, quotes, people, or timestamps. Return Markdown only."
@@ -78,17 +78,18 @@ class MultiProviderScheduler:
         self.sources = [(provider, ProviderClient(provider)) for provider in providers]
         self._lock = asyncio.Lock()
         self._loads = [0 for _ in self.sources]
+        self._token_loads = [0 for _ in self.sources]
 
     @classmethod
     def shared(cls, providers: list[ProviderSettings]) -> "MultiProviderScheduler":
-        key = tuple(sorted((provider.id, provider.base_url, provider.model) for provider in providers))
+        key = tuple(sorted((provider.id, provider.base_url, provider.model, provider.requests_per_minute, provider.tokens_per_minute, provider.max_in_flight) for provider in providers))
         scheduler = cls._shared.get(key)
         if scheduler is None:
             scheduler = cls(providers)
             cls._shared[key] = scheduler
         return scheduler
 
-    async def _pick_source(self, excluded: set[str]) -> tuple[int, ProviderSettings, ProviderClient] | None:
+    async def _pick_source(self, excluded: set[str], estimated_tokens: int) -> tuple[int, ProviderSettings, ProviderClient] | None:
         while True:
             async with self._lock:
                 candidates = [index for index, (provider, _) in enumerate(self.sources) if provider.id not in excluded]
@@ -97,16 +98,24 @@ class MultiProviderScheduler:
 
                 ready = []
                 retry_after = []
+                token_blocked = 0
                 for index in candidates:
                     provider, client = self.sources[index]
-                    availability = client.availability()
+                    availability = client.availability(estimated_tokens)
                     pending = self._loads[index]
+                    pending_tokens = self._token_loads[index]
                     capacity_open = pending < int(availability["capacity_available"])
                     rpm_open = (
                         not provider.requests_per_minute
                         or pending < max(0, provider.requests_per_minute - int(availability["requests_in_window"]))
                     )
-                    if availability["available"] and capacity_open and rpm_open:
+                    tpm_open = (
+                        not provider.tokens_per_minute
+                        or pending_tokens + estimated_tokens <= max(0, provider.tokens_per_minute - int(availability["tokens_in_window"]))
+                    )
+                    if availability["token_limit_exceeded"]:
+                        token_blocked += 1
+                    if availability["available"] and capacity_open and rpm_open and tpm_open:
                         ready.append((index, int(availability["in_flight"])))
                     else:
                         retry_after.append(float(availability["retry_after_seconds"] or 0.1))
@@ -115,17 +124,21 @@ class MultiProviderScheduler:
                     index = min(ready, key=lambda item: (self._loads[item[0]], item[1], item[0]))[0]
                     provider, client = self.sources[index]
                     self._loads[index] += 1
+                    self._token_loads[index] += estimated_tokens
                     return index, provider, client
+                if token_blocked == len(candidates):
+                    raise ProviderError(f"Estimated request uses {estimated_tokens} tokens, above all configured TPM limits")
                 delay = min(retry_after) if retry_after else 0.1
             await asyncio.sleep(min(max(delay, 0.1), 1.0))
 
     async def chat(self, *, system: str, user: str) -> tuple[str, ProviderSettings]:
+        estimated_tokens = max(estimate_chat_tokens(system, user, provider.max_output_tokens) for provider, _ in self.sources)
         excluded: set[str] = set()
         failures: list[str] = []
-        while source := await self._pick_source(excluded):
+        while source := await self._pick_source(excluded, estimated_tokens):
             index, provider, client = source
             try:
-                return await client.chat(system=system, user=user, model=provider.model), provider
+                return await client.chat(system=system, user=user, model=provider.model, estimated_tokens=estimated_tokens), provider
             except ProviderError as error:
                 # A single offline source must not fail an otherwise healthy
                 # multi-source job. Retry this request on each remaining one.
@@ -134,6 +147,7 @@ class MultiProviderScheduler:
             finally:
                 async with self._lock:
                     self._loads[index] = max(0, self._loads[index] - 1)
+                    self._token_loads[index] = max(0, self._token_loads[index] - estimated_tokens)
         raise ProviderError("All configured summary sources failed: " + "; ".join(failures))
 
 

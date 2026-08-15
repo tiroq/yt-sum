@@ -14,6 +14,10 @@ class ProviderError(RuntimeError):
     pass
 
 
+def estimate_chat_tokens(system: str, user: str, max_output_tokens: int) -> int:
+    return max(1, (len(system) + len(user) + 3) // 4 + max_output_tokens)
+
+
 class AsyncRateLimiter:
     def __init__(self, requests_per_minute: int | None) -> None:
         self.requests_per_minute = requests_per_minute
@@ -61,6 +65,62 @@ class AsyncRateLimiter:
         }
 
 
+class AsyncTokenRateLimiter:
+    def __init__(self, tokens_per_minute: int) -> None:
+        self.tokens_per_minute = max(0, tokens_per_minute)
+        self._events: deque[tuple[float, int]] = deque()
+        self._lock = asyncio.Lock()
+        self.waiting = 0
+
+    def _prune(self, now: float) -> None:
+        while self._events and now - self._events[0][0] >= 60:
+            self._events.popleft()
+
+    def tokens_in_window(self) -> int:
+        now = time.monotonic()
+        self._prune(now)
+        return sum(tokens for _, tokens in self._events)
+
+    async def acquire(self, tokens: int) -> None:
+        if not self.tokens_per_minute:
+            return
+        if tokens > self.tokens_per_minute:
+            raise ProviderError(f"Estimated request uses {tokens} tokens, above the {self.tokens_per_minute} TPM limit")
+        self.waiting += 1
+        try:
+            while True:
+                async with self._lock:
+                    now = time.monotonic()
+                    self._prune(now)
+                    used = sum(amount for _, amount in self._events)
+                    if used + tokens <= self.tokens_per_minute:
+                        self._events.append((now, tokens))
+                        return
+                    delay = max(0.05, 60 - (now - self._events[0][0]))
+                await asyncio.sleep(delay)
+        finally:
+            self.waiting = max(0, self.waiting - 1)
+
+    def retry_after_seconds(self, tokens: int = 1) -> float:
+        if not self.tokens_per_minute or tokens > self.tokens_per_minute:
+            return 0.0
+        now = time.monotonic()
+        self._prune(now)
+        used = sum(amount for _, amount in self._events)
+        if used + tokens <= self.tokens_per_minute:
+            return 0.0
+        return max(0.0, 60 - (now - self._events[0][0]))
+
+    def status(self) -> dict[str, int | float]:
+        retry_after = self.retry_after_seconds()
+        return {
+            "tokens_per_minute": self.tokens_per_minute,
+            "tokens_in_window": self.tokens_in_window(),
+            "token_waiting": self.waiting,
+            "token_retry_after_seconds": round(retry_after, 1),
+        }
+
+
 class AsyncCapacityLimiter:
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
@@ -84,6 +144,7 @@ class AsyncCapacityLimiter:
 
 class ProviderClient:
     _limiters: dict[str, AsyncRateLimiter] = {}
+    _token_limiters: dict[str, AsyncTokenRateLimiter] = {}
     _capacity_limiters: dict[str, AsyncCapacityLimiter] = {}
     _activity: dict[str, dict[str, int | str | None]] = {}
 
@@ -94,6 +155,11 @@ class ProviderClient:
             current = AsyncRateLimiter(provider.requests_per_minute)
             self._limiters[provider.id] = current
         self.limiter = current
+        token_limiter = self._token_limiters.get(provider.id)
+        if token_limiter is None or token_limiter.tokens_per_minute != provider.tokens_per_minute:
+            token_limiter = AsyncTokenRateLimiter(provider.tokens_per_minute)
+            self._token_limiters[provider.id] = token_limiter
+        self.token_limiter = token_limiter
         capacity = self._capacity_limiters.get(provider.id)
         if capacity is None or capacity.capacity != provider.max_in_flight:
             capacity = AsyncCapacityLimiter(provider.max_in_flight)
@@ -116,22 +182,28 @@ class ProviderClient:
                 "health": "cooldown" if cooldown else ("healthy" if provider.enabled else "paused"),
                 "cooldown_seconds": round(cooldown, 1),
                 **client.limiter.status(),
+                **client.token_limiter.status(),
                 **activity,
             })
         return result
 
-    def availability(self) -> dict[str, int | float | bool]:
+    def availability(self, estimated_tokens: int = 1) -> dict[str, int | float | bool]:
         activity = self._activity[self.provider.id]
         cooldown = max(0.0, float(activity["cooldown_until"] or 0) - time.monotonic())
-        retry_after = self.limiter.retry_after_seconds()
+        request_retry_after = self.limiter.retry_after_seconds()
+        token_retry_after = self.token_limiter.retry_after_seconds(estimated_tokens)
         capacity_available = self.capacity_limiter.available
+        token_limit_exceeded = bool(self.provider.tokens_per_minute and estimated_tokens > self.provider.tokens_per_minute)
         return {
-            "available": bool(self.provider.enabled and not cooldown and not retry_after and capacity_available > 0),
-            "retry_after_seconds": round(max(cooldown, retry_after), 1),
+            "available": bool(self.provider.enabled and not cooldown and not request_retry_after and not token_retry_after and not token_limit_exceeded and capacity_available > 0),
+            "retry_after_seconds": round(max(cooldown, request_retry_after, token_retry_after), 1),
             "capacity_available": capacity_available,
             "in_flight": int(activity["in_flight"]),
             "requests_in_window": len(self.limiter._timestamps),
             "requests_per_minute": self.provider.requests_per_minute or 0,
+            "tokens_in_window": self.token_limiter.tokens_in_window(),
+            "tokens_per_minute": self.provider.tokens_per_minute,
+            "token_limit_exceeded": token_limit_exceeded,
         }
 
     def _headers(self) -> dict[str, str]:
@@ -169,7 +241,7 @@ class ProviderClient:
             detail = str(error) or type(error).__name__
             raise ProviderError(f"Unable to fetch models from {self.provider.name}: {detail}") from error
 
-    async def chat(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
         self._assert_privacy()
         if not self.provider.enabled:
             raise ProviderError(f"{self.provider.name} is disabled")
@@ -180,6 +252,10 @@ class ProviderClient:
         cooldown = max(0.0, float(activity["cooldown_until"] or 0) - time.monotonic())
         if cooldown:
             raise ProviderError(f"{self.provider.name} is cooling down for {cooldown:.1f}s")
+        tokens = estimated_tokens or estimate_chat_tokens(system, user, self.provider.max_output_tokens)
+        if self.provider.tokens_per_minute and tokens > self.provider.tokens_per_minute:
+            raise ProviderError(f"Estimated request uses {tokens} tokens, above the {self.provider.tokens_per_minute} TPM limit")
+        await self.token_limiter.acquire(tokens)
         await self.limiter.acquire()
         await self.capacity_limiter.acquire()
         activity["in_flight"] = int(activity["in_flight"]) + 1

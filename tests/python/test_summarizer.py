@@ -37,6 +37,15 @@ def test_disabled_provider_does_not_send_chat_request() -> None:
         asyncio.run(ProviderClient(provider).chat(system="system", user="user"))
 
 
+def test_provider_rejects_request_above_tpm_limit() -> None:
+    provider = ProviderSettings(
+        id="tpm-small", name="Tiny TPM", kind="openai",
+        base_url="http://tpm-small/v1", model="a", tokens_per_minute=10,
+    )
+    with pytest.raises(ProviderError, match="above the 10 TPM limit"):
+        asyncio.run(ProviderClient(provider).chat(system="system", user="user", estimated_tokens=11))
+
+
 def test_scheduler_retries_a_failed_source_on_another_source(monkeypatch) -> None:
     sources = [
         ProviderSettings(id="offline-retry", name="Offline", kind="openai", base_url="http://offline/v1", model="a"),
@@ -44,7 +53,7 @@ def test_scheduler_retries_a_failed_source_on_another_source(monkeypatch) -> Non
     ]
     template = SummaryTemplate(id="retry", name_ru="Тест", name_en="Test", prompt="Summarize in {language}.")
 
-    async def flaky_chat(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def flaky_chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
         if self.provider.id == "offline-retry":
             raise ProviderError("ConnectTimeout")
         return "summary"
@@ -65,7 +74,7 @@ def test_map_requests_are_parallel_and_round_robin(monkeypatch) -> None:
     peak = 0
     used: list[str] = []
 
-    async def fake_chat(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def fake_chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
         nonlocal active, peak
         used.append(self.provider.id)
         active += 1
@@ -90,7 +99,7 @@ def test_scheduler_sends_next_request_to_available_source(monkeypatch) -> None:
     template = SummaryTemplate(id="available", name_ru="Тест", name_en="Test", prompt="Summarize in {language}.")
     used: list[str] = []
 
-    def fake_availability(self) -> dict[str, int | float | bool]:
+    def fake_availability(self, estimated_tokens: int = 1) -> dict[str, int | float | bool]:
         if self.provider.id == "busy-source":
             return {
                 "available": False,
@@ -99,6 +108,9 @@ def test_scheduler_sends_next_request_to_available_source(monkeypatch) -> None:
                 "in_flight": 1,
                 "requests_in_window": 0,
                 "requests_per_minute": 0,
+                "tokens_in_window": 0,
+                "tokens_per_minute": 0,
+                "token_limit_exceeded": False,
             }
         return {
             "available": True,
@@ -107,9 +119,12 @@ def test_scheduler_sends_next_request_to_available_source(monkeypatch) -> None:
             "in_flight": 0,
             "requests_in_window": 0,
             "requests_per_minute": 3,
+            "tokens_in_window": 0,
+            "tokens_per_minute": 0,
+            "token_limit_exceeded": False,
         }
 
-    async def fake_chat(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def fake_chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
         used.append(self.provider.id)
         return "summary"
 
@@ -121,12 +136,57 @@ def test_scheduler_sends_next_request_to_available_source(monkeypatch) -> None:
     assert result.markdown.endswith("summary\n")
 
 
+def test_scheduler_skips_source_when_tpm_window_is_full(monkeypatch) -> None:
+    sources = [
+        ProviderSettings(id="tpm-full", name="TPM full", kind="openai", base_url="http://full/v1", model="a", tokens_per_minute=3000),
+        ProviderSettings(id="tpm-ready", name="TPM ready", kind="openai", base_url="http://ready/v1", model="b", tokens_per_minute=10000),
+    ]
+    template = SummaryTemplate(id="tpm", name_ru="Тест", name_en="Test", prompt="Summarize in {language}.")
+    used: list[str] = []
+
+    def fake_availability(self, estimated_tokens: int = 1) -> dict[str, int | float | bool]:
+        if self.provider.id == "tpm-full":
+            return {
+                "available": False,
+                "retry_after_seconds": 15.0,
+                "capacity_available": 1,
+                "in_flight": 0,
+                "requests_in_window": 0,
+                "requests_per_minute": 0,
+                "tokens_in_window": 2000,
+                "tokens_per_minute": 3000,
+                "token_limit_exceeded": False,
+            }
+        return {
+            "available": True,
+            "retry_after_seconds": 0.0,
+            "capacity_available": 1,
+            "in_flight": 0,
+            "requests_in_window": 0,
+            "requests_per_minute": 0,
+            "tokens_in_window": 0,
+            "tokens_per_minute": 10000,
+            "token_limit_exceeded": False,
+        }
+
+    async def fake_chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
+        used.append(self.provider.id)
+        return "summary"
+
+    monkeypatch.setattr(ProviderClient, "availability", fake_availability)
+    monkeypatch.setattr(ProviderClient, "chat", fake_chat)
+    result = asyncio.run(Summarizer(AppSettings(), sources, template).run("short transcript", language="en", model="a", mode="complete"))
+
+    assert used == ["tpm-ready"]
+    assert result.markdown.endswith("summary\n")
+
+
 def test_progress_reports_request_plan_and_actual_source(monkeypatch) -> None:
     provider = ProviderSettings(id="local", name="Local Ollama", kind="ollama", base_url="http://127.0.0.1:11434", model="llama-test")
     template = SummaryTemplate(id="test", name_ru="Тест", name_en="Test", prompt="Summarize in {language}.")
     events = []
 
-    async def fake_chat(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def fake_chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
         return "note"
 
     monkeypatch.setattr(ProviderClient, "chat", fake_chat)
@@ -150,7 +210,7 @@ def test_progress_keeps_failed_request_visible(monkeypatch) -> None:
     template = SummaryTemplate(id="test", name_ru="Тест", name_en="Test", prompt="Summarize in {language}.")
     events = []
 
-    async def failed_chat(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def failed_chat(self, *, system: str, user: str, model: str | None = None, estimated_tokens: int | None = None) -> str:
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(ProviderClient, "chat", failed_chat)
