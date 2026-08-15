@@ -36,5 +36,5 @@ class ApplicationContext:
 
     @staticmethod
     def _summary_signature(settings: AppSettings) -> tuple:
-        providers = tuple((item.id, item.base_url, item.model, item.enabled, item.temperature, item.max_output_tokens) for item in settings.providers)
+        providers = tuple((item.id, item.base_url, item.model, item.enabled, item.requests_per_minute, item.tokens_per_minute, item.max_in_flight, item.temperature, item.max_output_tokens) for item in settings.providers)
         return (settings.active_provider_id, settings.parallel_summary_sources, settings.summary_language, settings.summary_mode, settings.summary_template_id, settings.chunk_characters, providers)
