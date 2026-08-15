@@ -481,7 +481,6 @@ export default function Home() {
     if (!detail) return;
     try {
       await request(`/videos/${detail.meta.video_id}/refresh`, { method: "POST" });
-      setQueueOpen(true);
       setNotice(language === "ru" ? "Транскрипция поставлена на переобработку." : "Transcript reprocessing has been queued.");
       await refresh();
     } catch (cause) {
