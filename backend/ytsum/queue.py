@@ -277,8 +277,13 @@ class ProcessingQueue:
     ) -> None:
         client = YouTubeClient(settings)
         self._stage(job, "metadata", 0.08)
+        self._event(job, "metadata", f"Fetching metadata from {job.source_url}", "progress")
         extracted = await asyncio.to_thread(client.extract, job.source_url)
-        self._log(job, f"Extracted: {extracted.title} ({extracted.duration_seconds}s)")
+        languages = ", ".join(extracted.available_languages) if extracted.available_languages else "none reported"
+        duration = f"{extracted.duration_seconds}s" if extracted.duration_seconds is not None else "unknown duration"
+        self._log(job, f"Metadata extracted: title={extracted.title!r}; channel={extracted.channel or 'unknown'}; duration={duration}; languages={languages}")
+        self._event(job, "metadata", f"Metadata received: {extracted.title} · {extracted.channel or 'unknown channel'} · {duration}", "completed")
+        self._event(job, "metadata", f"Subtitle languages reported: {languages}", "progress")
         self._check_cancelled(job)
         previous = self.storage.read_meta(job.video_id)
         existing = self.storage.get_video(job.video_id)
@@ -311,6 +316,9 @@ class ProcessingQueue:
         if thumbnail:
             meta.thumbnail_file = thumbnail.name
             self.storage.save_meta(meta, folder)
+            self._event(job, "thumbnail", f"Preview saved: {thumbnail.name}", "completed")
+        else:
+            self._event(job, "thumbnail", "Preview unavailable; continuing without local thumbnail", "progress")
 
         self._stage(job, "transcript-selection", 0.22)
         original_choice = client.choose_original_transcript(extracted)
