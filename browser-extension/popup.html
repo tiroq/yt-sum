@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YT Sum</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header><img src="icon.svg" alt="" /><div><h1>YT Sum</h1><p id="video-status">Checking this tab…</p></div></header>
+      <button id="add-video" class="primary" type="button" disabled>Add current video</button>
+      <output id="result" aria-live="polite"></output>
+      <nav><button id="open-app" type="button">Open YT Sum</button><button id="open-settings" type="button">Settings</button></nav>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
