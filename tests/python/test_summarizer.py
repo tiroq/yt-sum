@@ -28,6 +28,15 @@ def test_openai_client_accepts_a_full_chat_completions_url() -> None:
     assert ProviderClient(provider)._openai_base_url() == "https://api.cerebras.ai/v1"
 
 
+def test_disabled_provider_does_not_send_chat_request() -> None:
+    provider = ProviderSettings(
+        id="disabled", name="Disabled", kind="openai",
+        base_url="http://disabled/v1", model="a", enabled=False,
+    )
+    with pytest.raises(ProviderError, match="Disabled is disabled"):
+        asyncio.run(ProviderClient(provider).chat(system="system", user="user"))
+
+
 def test_scheduler_retries_a_failed_source_on_another_source(monkeypatch) -> None:
     sources = [
         ProviderSettings(id="offline-retry", name="Offline", kind="openai", base_url="http://offline/v1", model="a"),
@@ -71,6 +80,45 @@ def test_map_requests_are_parallel_and_round_robin(monkeypatch) -> None:
     assert peak > 1
     assert used[:2] == ["one", "two"]
     assert result.provider_ids == ["one", "two"]
+
+
+def test_scheduler_sends_next_request_to_available_source(monkeypatch) -> None:
+    sources = [
+        ProviderSettings(id="busy-source", name="Busy", kind="openai", base_url="http://busy/v1", model="a"),
+        ProviderSettings(id="ready-source", name="Ready", kind="openai", base_url="http://ready/v1", model="b", requests_per_minute=3),
+    ]
+    template = SummaryTemplate(id="available", name_ru="Тест", name_en="Test", prompt="Summarize in {language}.")
+    used: list[str] = []
+
+    def fake_availability(self) -> dict[str, int | float | bool]:
+        if self.provider.id == "busy-source":
+            return {
+                "available": False,
+                "retry_after_seconds": 0.1,
+                "capacity_available": 0,
+                "in_flight": 1,
+                "requests_in_window": 0,
+                "requests_per_minute": 0,
+            }
+        return {
+            "available": True,
+            "retry_after_seconds": 0.0,
+            "capacity_available": 1,
+            "in_flight": 0,
+            "requests_in_window": 0,
+            "requests_per_minute": 3,
+        }
+
+    async def fake_chat(self, *, system: str, user: str, model: str | None = None) -> str:
+        used.append(self.provider.id)
+        return "summary"
+
+    monkeypatch.setattr(ProviderClient, "availability", fake_availability)
+    monkeypatch.setattr(ProviderClient, "chat", fake_chat)
+    result = asyncio.run(Summarizer(AppSettings(), sources, template).run("short transcript", language="en", model="a", mode="complete"))
+
+    assert used == ["ready-source"]
+    assert result.markdown.endswith("summary\n")
 
 
 def test_progress_reports_request_plan_and_actual_source(monkeypatch) -> None:

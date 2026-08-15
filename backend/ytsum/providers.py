@@ -21,28 +21,38 @@ class AsyncRateLimiter:
         self._lock = asyncio.Lock()
         self.waiting = 0
 
+    def _prune(self, now: float) -> None:
+        while self._timestamps and now - self._timestamps[0] >= 60:
+            self._timestamps.popleft()
+
     async def acquire(self) -> None:
         if not self.requests_per_minute:
             return
-        async with self._lock:
-            self.waiting += 1
+        self.waiting += 1
+        try:
             while True:
-                now = time.monotonic()
-                while self._timestamps and now - self._timestamps[0] >= 60:
-                    self._timestamps.popleft()
-                if len(self._timestamps) < self.requests_per_minute:
-                    self._timestamps.append(now)
-                    self.waiting -= 1
-                    return
-                await asyncio.sleep(max(0.05, 60 - (now - self._timestamps[0])))
+                async with self._lock:
+                    now = time.monotonic()
+                    self._prune(now)
+                    if len(self._timestamps) < self.requests_per_minute:
+                        self._timestamps.append(now)
+                        return
+                    delay = max(0.05, 60 - (now - self._timestamps[0]))
+                await asyncio.sleep(delay)
+        finally:
+            self.waiting = max(0, self.waiting - 1)
+
+    def retry_after_seconds(self) -> float:
+        now = time.monotonic()
+        self._prune(now)
+        if self.requests_per_minute and len(self._timestamps) >= self.requests_per_minute:
+            return max(0.0, 60 - (now - self._timestamps[0]))
+        return 0.0
 
     def status(self) -> dict[str, int | float | None]:
         now = time.monotonic()
-        while self._timestamps and now - self._timestamps[0] >= 60:
-            self._timestamps.popleft()
-        retry_after = 0.0
-        if self.requests_per_minute and len(self._timestamps) >= self.requests_per_minute:
-            retry_after = max(0.0, 60 - (now - self._timestamps[0]))
+        self._prune(now)
+        retry_after = self.retry_after_seconds()
         return {
             "requests_per_minute": self.requests_per_minute,
             "requests_in_window": len(self._timestamps),
@@ -66,6 +76,10 @@ class AsyncCapacityLimiter:
 
     def release(self) -> None:
         self.semaphore.release()
+
+    @property
+    def available(self) -> int:
+        return max(0, self.semaphore._value)
 
 
 class ProviderClient:
@@ -106,6 +120,20 @@ class ProviderClient:
             })
         return result
 
+    def availability(self) -> dict[str, int | float | bool]:
+        activity = self._activity[self.provider.id]
+        cooldown = max(0.0, float(activity["cooldown_until"] or 0) - time.monotonic())
+        retry_after = self.limiter.retry_after_seconds()
+        capacity_available = self.capacity_limiter.available
+        return {
+            "available": bool(self.provider.enabled and not cooldown and not retry_after and capacity_available > 0),
+            "retry_after_seconds": round(max(cooldown, retry_after), 1),
+            "capacity_available": capacity_available,
+            "in_flight": int(activity["in_flight"]),
+            "requests_in_window": len(self.limiter._timestamps),
+            "requests_per_minute": self.provider.requests_per_minute or 0,
+        }
+
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if secret := get_secret(self.provider.id):
@@ -143,6 +171,8 @@ class ProviderClient:
 
     async def chat(self, *, system: str, user: str, model: str | None = None) -> str:
         self._assert_privacy()
+        if not self.provider.enabled:
+            raise ProviderError(f"{self.provider.name} is disabled")
         selected_model = model or self.provider.model
         if not selected_model:
             raise ProviderError(f"No model selected for {self.provider.name}")

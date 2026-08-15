@@ -299,6 +299,13 @@ class ProcessingQueue:
             if workflow and workflow.settings_snapshot
             else self.settings_repo.load()
         )
+        if job.kind in {"summarize", "prompt"}:
+            current = self.settings_repo.load()
+            settings = settings.model_copy(update={
+                "providers": current.providers,
+                "active_provider_id": current.active_provider_id,
+                "parallel_summary_sources": current.parallel_summary_sources,
+            })
         work_dir = self.storage.work_dir / job.id
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -671,6 +678,8 @@ class ProcessingQueue:
         provider = next((item for item in settings.providers if item.id == provider_id), None)
         if not provider:
             raise RuntimeError(f"Summary provider '{provider_id}' not found")
+        if not provider.enabled:
+            raise RuntimeError(f"Summary provider '{provider_id}' is disabled")
         if job.overrides.get("model"):
             provider = provider.model_copy(update={"model": job.overrides["model"]})
         if not provider.model:

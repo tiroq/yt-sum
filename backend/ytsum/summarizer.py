@@ -89,14 +89,35 @@ class MultiProviderScheduler:
         return scheduler
 
     async def _pick_source(self, excluded: set[str]) -> tuple[int, ProviderSettings, ProviderClient] | None:
-        async with self._lock:
-            candidates = [index for index, (provider, _) in enumerate(self.sources) if provider.id not in excluded]
-            if not candidates:
-                return None
-            index = min(candidates, key=lambda item: self._loads[item])
-            provider, client = self.sources[index]
-            self._loads[index] += 1
-            return index, provider, client
+        while True:
+            async with self._lock:
+                candidates = [index for index, (provider, _) in enumerate(self.sources) if provider.id not in excluded]
+                if not candidates:
+                    return None
+
+                ready = []
+                retry_after = []
+                for index in candidates:
+                    provider, client = self.sources[index]
+                    availability = client.availability()
+                    pending = self._loads[index]
+                    capacity_open = pending < int(availability["capacity_available"])
+                    rpm_open = (
+                        not provider.requests_per_minute
+                        or pending < max(0, provider.requests_per_minute - int(availability["requests_in_window"]))
+                    )
+                    if availability["available"] and capacity_open and rpm_open:
+                        ready.append((index, int(availability["in_flight"])))
+                    else:
+                        retry_after.append(float(availability["retry_after_seconds"] or 0.1))
+
+                if ready:
+                    index = min(ready, key=lambda item: (self._loads[item[0]], item[1], item[0]))[0]
+                    provider, client = self.sources[index]
+                    self._loads[index] += 1
+                    return index, provider, client
+                delay = min(retry_after) if retry_after else 0.1
+            await asyncio.sleep(min(max(delay, 0.1), 1.0))
 
     async def chat(self, *, system: str, user: str) -> tuple[str, ProviderSettings]:
         excluded: set[str] = set()
