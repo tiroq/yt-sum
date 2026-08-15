@@ -62,6 +62,26 @@ def select_subtitle(
     return None
 
 
+def select_original_subtitle(
+    subtitles: dict[str, list[dict[str, Any]]],
+    automatic: dict[str, list[dict[str, Any]]],
+    original_language: str | None,
+) -> SubtitleChoice | None:
+    """Choose the video's own caption track before any localized variant."""
+    if original_language:
+        if human_key := matching_key(subtitles, original_language):
+            return SubtitleChoice(human_key, "original", subtitles[human_key])
+        if auto_key := matching_key(automatic, original_language):
+            return SubtitleChoice(auto_key, "original", automatic[auto_key])
+    if subtitles:
+        language, entries = next(iter(subtitles.items()))
+        return SubtitleChoice(language, "original", entries)
+    if automatic:
+        language, entries = next(iter(automatic.items()))
+        return SubtitleChoice(language, "original", entries)
+    return None
+
+
 def parse_timestamp(value: str) -> float:
     parts = value.replace(",", ".").split(":")
     seconds = float(parts.pop())
@@ -81,7 +101,6 @@ def parse_caption_text(content: str) -> list[TranscriptSegment]:
     lines = content.replace("\r\n", "\n").split("\n")
     segments: list[TranscriptSegment] = []
     index = 0
-    last_text = ""
     while index < len(lines):
         match = TIMESTAMP_RE.search(lines[index])
         if not match:
@@ -104,14 +123,41 @@ def parse_caption_file(path: Path) -> list[TranscriptSegment]:
 
 
 def merge_rolling_captions(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
-    merged: list[TranscriptSegment] = []
+    """Remove repeated leading words from rolling captions without changing cue times.
+
+    YouTube's automatic captions commonly repeat the tail of one cue at the
+    beginning of the next.  Keep the new words in their original cue instead
+    of merging cues, so transcript links continue to point at the source
+    timing.
+    """
+    normalized: list[TranscriptSegment] = []
+    previous_words: list[str] | None = None
     for segment in segments:
-        if merged and segment.text.startswith(merged[-1].text):
-            previous = merged[-1]
-            merged[-1] = TranscriptSegment(start=previous.start, end=segment.end, text=segment.text, speaker=previous.speaker)
-        elif not merged or segment.text != merged[-1].text:
-            merged.append(segment)
-    return merged
+        words = segment.text.split()
+        overlap = _rolling_overlap(previous_words, words) if previous_words else 0
+        remaining_words = words[overlap:]
+        if remaining_words:
+            normalized.append(segment.model_copy(update={"text": " ".join(remaining_words)}))
+        # Compare the next cue against the complete source cue, not the
+        # shortened text above: rolling captions advance one word at a time.
+        previous_words = words
+    return normalized
+
+
+def _rolling_overlap(previous_words: list[str], current_words: list[str]) -> int:
+    """Return the longest suffix/prefix overlap, comparing words loosely."""
+    limit = min(len(previous_words), len(current_words))
+    for size in range(limit, 0, -1):
+        if all(
+            _caption_word_key(left) == _caption_word_key(right)
+            for left, right in zip(previous_words[-size:], current_words[:size])
+        ):
+            return size
+    return 0
+
+
+def _caption_word_key(word: str) -> str:
+    return re.sub(r"^\W+|\W+$", "", word).casefold()
 
 
 def format_timestamp(seconds: float) -> str:
