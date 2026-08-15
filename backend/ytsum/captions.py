@@ -93,9 +93,8 @@ def parse_caption_text(content: str) -> list[TranscriptSegment]:
             text_lines.append(lines[index])
             index += 1
         text = clean_caption_text(text_lines)
-        if text and text != last_text:
+        if text:
             segments.append(TranscriptSegment(start=parse_timestamp(match.group("start")), end=parse_timestamp(match.group("end")), text=text))
-            last_text = text
         index += 1
     return merge_rolling_captions(segments)
 

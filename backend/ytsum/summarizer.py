@@ -89,9 +89,10 @@ class Summarizer:
 
         level = mapped
         while len("\n\n".join(level)) > self.settings.chunk_characters:
-            next_level: list[str] = []
-            for group in split_text("\n\n---\n\n".join(level), self.settings.chunk_characters, overlap=0):
-                next_level.append(await self._chat(f"Merge these intermediate notes in {language}. Remove duplication but preserve all distinct facts and timestamp links.\n\n{group}", model))
+            groups = split_text("\n\n---\n\n".join(level), self.settings.chunk_characters, overlap=0)
+            self.requests_planned += len(groups)
+            self._emit("summary-plan", f"Added {len(groups)} merge request(s) to the plan")
+            next_level = list(await asyncio.gather(*(self._chat(f"Merge these intermediate notes in {language}. Remove duplication but preserve all distinct facts and timestamp links.\n\n{group}", model, "summary-reduce", f"Merging intermediate notes {index}/{len(groups)}") for index, group in enumerate(groups, start=1))))
             level = next_level
         return await self._final_summary("\n\n---\n\n".join(level), language, model)
 

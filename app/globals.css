@@ -52,7 +52,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .library-controls select { width: 100%; min-width: 0; height: 30px; padding: 0 5px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; color: #e8f2ed; background: rgba(0,0,0,.17); font-size: 10px; cursor: pointer; }
 .library-controls option { color: var(--ink); background: var(--paper); }
 .video-list { min-height: 0; flex: 1; overflow-y: auto; margin: 10px -5px 8px; padding: 0 5px; scrollbar-width: thin; scrollbar-color: #41675a transparent; }
-.video-card { width: 100%; border: 1px solid transparent; background: transparent; color: inherit; border-radius: 12px; display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 10px; align-items: center; padding: 7px; text-align: left; cursor: pointer; transition: background .15s, border .15s; }
+.video-group + .video-group { margin-top: 13px; }
+.video-group h2 { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 6px 4px; color: #9bb5aa; font: 700 9px/1.2 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; text-transform: uppercase; }
+.video-group h2 span { color: #759387; font-size: 9px; }
+.video-card { width: 100%; border: 1px solid transparent; background: transparent; color: inherit; border-radius: 12px; display: flex; align-items: center; padding: 7px; transition: background .15s, border .15s; }
 .video-card:hover { background: rgba(255,255,255,.055); }
 .video-card.selected { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.1); }
 .video-card-main { min-width: 0; flex: 1; border: 0; background: transparent; color: inherit; display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 10px; align-items: center; padding: 0; text-align: left; cursor: pointer; }
