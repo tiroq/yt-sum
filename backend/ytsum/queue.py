@@ -57,11 +57,14 @@ class ProcessingQueue:
         self._stopping = False
         self._cancelled: set[str] = set()
         self._task: asyncio.Task | None = None
+        self._download_tasks: list[asyncio.Task] = []
         self._llm_tasks: list[asyncio.Task] = []
         self._resize_task: asyncio.Task | None = None
         self._active_jobs: dict[str, JobRecord] = {}
         self._job_tasks: dict[str, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._metadata_gate = asyncio.Semaphore(1)
+        self._transcript_gate = asyncio.Semaphore(1)
 
     DOWNLOAD_KINDS = ("process", "refresh")
     LLM_KINDS = ("summarize", "prompt", "tts")
@@ -79,7 +82,11 @@ class ProcessingQueue:
             if self.settings_repo is None:
                 self._task = asyncio.create_task(asyncio.sleep(3600), name="yt-sum-test-worker")
                 return
-            self._task = asyncio.create_task(self._run_downloads(), name="yt-sum-download-worker")
+            self._download_tasks = [
+                asyncio.create_task(self._run_downloads(index), name=f"yt-sum-download-worker-{index + 1}")
+                for index in range(2)
+            ]
+            self._task = self._download_tasks[0]
             settings = self.settings_repo.load()
             worker_count = max(1, len([provider for provider in settings.providers if provider.enabled and provider.model]))
             self._llm_tasks = [
@@ -90,7 +97,7 @@ class ProcessingQueue:
     async def stop(self) -> None:
         self._stopping = True
         self._wake.set()
-        if self._task or self._llm_tasks:
+        if self._task or self._download_tasks or self._llm_tasks:
             # LLM calls deliberately have a long request timeout. Shutdown
             # must not wait for one: the job is requeued for the next launch.
             for active_job in list(self._active_jobs.values()):
@@ -101,11 +108,12 @@ class ProcessingQueue:
                     error=None,
                 )
                 self._log(active_job, "Paused for application shutdown; will resume after restart")
-            tasks = [task for task in [self._task, *self._llm_tasks, self._resize_task] if task]
+            tasks = [task for task in [*self._download_tasks, *self._llm_tasks, self._resize_task] if task]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self._task = None
+            self._download_tasks = []
             self._llm_tasks = []
             self._resize_task = None
             self._active_jobs.clear()
@@ -186,8 +194,8 @@ class ProcessingQueue:
                 self._job_tasks.pop(job.id, None)
                 self._active_jobs.pop(worker_name, None)
 
-    async def _run_downloads(self) -> None:
-        await self._run_lane(self.DOWNLOAD_KINDS, "downloads")
+    async def _run_downloads(self, index: int) -> None:
+        await self._run_lane(self.DOWNLOAD_KINDS, f"downloads-{index}")
 
     async def _run_llm(self, index: int) -> None:
         await self._run_lane(self.LLM_KINDS, f"llm-{index}")
@@ -276,9 +284,10 @@ class ProcessingQueue:
         self, job: JobRecord, settings: AppSettings, work_dir: Path
     ) -> None:
         client = YouTubeClient(settings)
-        self._stage(job, "metadata", 0.08)
-        self._event(job, "metadata", f"Fetching metadata from {job.source_url}", "progress")
-        extracted = await asyncio.to_thread(client.extract, job.source_url)
+        async with self._metadata_gate:
+            self._stage(job, "metadata", 0.08)
+            self._event(job, "metadata", f"Fetching metadata from {job.source_url}", "progress")
+            extracted = await asyncio.to_thread(client.extract, job.source_url)
         languages = ", ".join(extracted.available_languages) if extracted.available_languages else "none reported"
         duration = f"{extracted.duration_seconds}s" if extracted.duration_seconds is not None else "unknown duration"
         self._log(job, f"Metadata extracted: title={extracted.title!r}; channel={extracted.channel or 'unknown'}; duration={duration}; languages={languages}")
@@ -330,9 +339,9 @@ class ProcessingQueue:
                 "No usable YouTube transcript; switching to local audio transcription",
             )
             self._stage(job, "audio-download", 0.30)
-            audio_path = await asyncio.to_thread(
-                client.download_audio, extracted, work_dir
-            )
+            async with self._transcript_gate:
+                self._event(job, "audio-download", "Waiting for the single respectful media-download slot", "progress")
+                audio_path = await asyncio.to_thread(client.download_audio, extracted, work_dir)
             self._check_cancelled(job)
             self._stage(job, "transcribing", 0.50)
             segments = await MeetingTranscriberBridge(settings).transcribe(audio_path)
@@ -376,7 +385,9 @@ class ProcessingQueue:
     async def _save_caption_transcript(self, job: JobRecord, client: YouTubeClient, extracted, choice: SubtitleChoice, role: str, meta: VideoMeta, folder: Path, work_dir: Path) -> TranscriptInfo:
         self._log(job, f"Selected {role} {choice.kind} transcript language {choice.language}")
         self._stage(job, "subtitle-download", 0.32)
-        caption_file = await asyncio.to_thread(client.download_subtitle, extracted, choice, work_dir / role)
+        async with self._transcript_gate:
+            self._event(job, "subtitle-download", "Waiting for the single respectful subtitle-download slot", "progress")
+            caption_file = await asyncio.to_thread(client.download_subtitle, extracted, choice, work_dir / role)
         info = self._write_transcript(meta, folder, role, choice.language, choice.kind, "youtube", None, parse_caption_file(caption_file))
         self._log(job, f"Transcript written: {info.file} ({info.language}/{info.kind}/{info.source})")
         return info
