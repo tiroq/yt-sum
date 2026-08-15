@@ -131,6 +131,33 @@ def get_thumbnail(video_id: str):
     return FileResponse(path)
 
 
+def artifact_folder(video_id: str) -> Path:
+    """Return a video's artifact directory only when it remains inside the library."""
+    detail = context().storage().get_video(video_id)
+    if not detail or detail.meta.video_id != video_id or not detail.folder:
+        raise HTTPException(404, "Video artifacts not found")
+
+    library_dir = context().storage().library_dir.resolve()
+    folder = Path(detail.folder).resolve()
+    try:
+        folder.relative_to(library_dir)
+    except ValueError as error:
+        raise HTTPException(403, "Video artifacts are outside the library") from error
+    if folder == library_dir or not folder.is_dir():
+        raise HTTPException(404, "Video artifacts not found")
+    return folder
+
+
+@app.post("/api/videos/{video_id}/folder/open")
+def open_video_folder(video_id: str) -> dict:
+    folder = artifact_folder(video_id)
+    try:
+        subprocess.run(["open", str(folder)], check=True, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise HTTPException(502, "Could not open the artifacts folder in Finder") from error
+    return {"opened": True}
+
+
 @app.patch("/api/videos/{video_id}")
 def patch_video(video_id: str, request: UpdateVideoRequest) -> dict:
     meta = context().storage().patch_video(video_id, request.favorite, request.tags, request.archived)

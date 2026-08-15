@@ -46,6 +46,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .search-box { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border: 1px solid rgba(255,255,255,.09); background: rgba(0,0,0,.12); border-radius: 10px; color: #86a297; }
 .search-box input { width: 100%; border: 0; outline: 0; color: #f4f8f6; background: transparent; font-size: 12px; }
 .search-box input::placeholder { color: #779087; }
+.library-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
+.library-controls label { min-width: 0; }
+.library-controls label > span { display: block; margin: 0 0 3px 2px; color: #86a297; font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.library-controls select { width: 100%; min-width: 0; height: 30px; padding: 0 5px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; color: #e8f2ed; background: rgba(0,0,0,.17); font-size: 10px; cursor: pointer; }
+.library-controls option { color: var(--ink); background: var(--paper); }
 .video-list { min-height: 0; flex: 1; overflow-y: auto; margin: 10px -5px 8px; padding: 0 5px; scrollbar-width: thin; scrollbar-color: #41675a transparent; }
 .video-card { width: 100%; border: 1px solid transparent; background: transparent; color: inherit; border-radius: 12px; display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 10px; align-items: center; padding: 7px; text-align: left; cursor: pointer; transition: background .15s, border .15s; }
 .video-card:hover { background: rgba(255,255,255,.055); }

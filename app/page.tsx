@@ -197,6 +197,7 @@ export default function Home() {
   const [archivedVideos, setArchivedVideos] = useState<VideoItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const libraryRefreshRevisionRef = useRef(0);
   const [health, setHealth] = useState<Health | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<VideoDetail | null>(null);
@@ -213,8 +214,30 @@ export default function Home() {
 
   const language = settings?.interface_language ?? "ru";
   const t = copy[language];
+  useEffect(() => {
+    const savedSort = window.localStorage.getItem("yt-sum.library.sort");
+    const savedGrouping = window.localStorage.getItem("yt-sum.library.grouping");
+    const savedTranscriptView = window.localStorage.getItem("yt-sum.transcript.view");
+    if (savedSort === "asc" || savedSort === "desc") setSortDirection(savedSort);
+    if (savedGrouping === "none" || savedGrouping === "tag" || savedGrouping === "topic") setGrouping(savedGrouping);
+    if (savedTranscriptView === "continuous" || savedTranscriptView === "structured") setTranscriptView(savedTranscriptView);
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("yt-sum.library.sort", sortDirection);
+  }, [sortDirection]);
+
+  useEffect(() => {
+    window.localStorage.setItem("yt-sum.library.grouping", grouping);
+  }, [grouping]);
+
+  useEffect(() => {
+    window.localStorage.setItem("yt-sum.transcript.view", transcriptView);
+  }, [transcriptView]);
 
   const refresh = useCallback(async () => {
+    const jobsRefreshRevision = jobsRefreshRevisionRef.current;
+    const libraryRefreshRevision = ++libraryRefreshRevisionRef.current;
     try {
       const [videoPayload, archivedPayload, jobPayload, settingsPayload] = await Promise.all([
         request<{ items: VideoItem[] }>(`/videos${query.trim() ? `?query=${encodeURIComponent(query.trim())}` : ""}`),
@@ -384,13 +407,15 @@ export default function Home() {
 
         <div className="sidebar-section-label">{t.library}</div>
         <div className="search-box"><Search size={16} /><input id="search-library" name="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.search} /></div>
+        <div className="library-controls" aria-label={language === "ru" ? "Настройки списка видео" : "Video list settings"}>
+          <label><span>{t.sort}</span><select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as "asc" | "desc")} aria-label={t.sort}><option value="asc">{t.alphabetical}</option><option value="desc">{t.alphabeticalReverse}</option></select></label>
+          <label><span>{t.grouping}</span><select value={grouping} onChange={(event) => setGrouping(event.target.value as "none" | "tag" | "topic")} aria-label={t.grouping}>{GROUPING_OPTIONS.map((option) => <option key={option.id} value={option.id}>{language === "ru" ? option.label : option.labelEn}</option>)}</select></label>
+        </div>
         <div className="video-list">
-          {visibleVideos.map((video) => (
-            <button key={video.video_id} className={`video-card ${selectedId === video.video_id && view === "library" ? "selected" : ""}`} onClick={() => { setSelectedId(video.video_id); setView("library"); setSidebarOpen(false); }}>
-              <div className="thumb-wrap">
-                <img src={video.thumbnail_file ? `${API}/videos/${video.video_id}/thumbnail` : `https://i.ytimg.com/vi/${video.video_id}/mqdefault.jpg`} alt="" />
-                {video.duration_seconds ? <span>{formatDuration(video.duration_seconds)}</span> : null}
-              </div>
+          {videoGroups.map((group) => <section className="video-group" key={group.id}>{group.label ? <h2>{group.label}<span>{group.videos.length}</span></h2> : null}{group.videos.map((video) => (
+            <div key={`${group.id}-${video.video_id}`} className={`video-card ${selectedId === video.video_id && view === "library" ? "selected" : ""}`}>
+              <button className="video-card-main" onClick={() => { setSelectedId(video.video_id); setView("library"); setSidebarOpen(false); }}>
+                <div className="thumb-wrap"><img src={video.thumbnail_file ? `${API}/videos/${video.video_id}/thumbnail` : `https://i.ytimg.com/vi/${video.video_id}/mqdefault.jpg`} alt="" />{video.duration_seconds !== null ? <span>{formatDuration(video.duration_seconds)}</span> : null}</div>
               <div className="video-card-copy"><strong>{video.title}</strong><small>{video.channel || statusLabel(video.status, language)}</small><div className={`status-dot ${video.status}`} /> </div>
             </button>
               <IconButton className="quick-archive-button" onClick={(event) => { event.stopPropagation(); void setArchived(video, !video.archived); }} aria-label={video.archived ? t.restore : t.archive} tooltip={video.archived ? "Вернуть видео в библиотеку. Оно снова появится среди обычных видео." : "Архивировать видео. Оно исчезнет из обычного списка, но файлы сохранятся."}>{video.archived ? <ArchiveX size={15} /> : <Archive size={15} />}</IconButton>
@@ -596,5 +621,8 @@ function SystemStatus({ health, settings, language, onRescan }: { health: Health
   const names: Record<string, string> = { yt_dlp: "yt-dlp", ffmpeg: "ffmpeg", native_transcriber: "Meeting Transcriber", cookies: "YouTube cookies" };
   const [updateState, setUpdateState] = useState<"idle" | "running" | "done">("idle");
   async function updateYtDlp() { setUpdateState("running"); await request("/system/yt-dlp/update", { method: "POST" }); setUpdateState("done"); }
-  return <div className="status-page"><div className="page-heading"><div><span className="overline">DIAGNOSTICS</span><h1>{language === "ru" ? "Состояние системы" : "System status"}</h1><p>{health.library}</p></div><div className="page-actions"><button className="secondary-button" onClick={updateYtDlp} disabled={updateState === "running"}>{updateState === "running" ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}{updateState === "done" ? (language === "ru" ? "Перезапустите приложение" : "Restart the app") : "yt-dlp"}</button><button className="secondary-button" onClick={onRescan}><RefreshCw size={16} />{language === "ru" ? "Пересканировать" : "Rescan"}</button></div></div><div className="health-grid">{Object.entries(health.components).map(([key, component]) => <div className={`health-card ${component.ready ? "ready" : "missing"}`} key={key}><div className="health-icon">{component.ready ? <CheckCircle2 size={22} /> : <AlertCircle size={22} />}</div><div><h3>{names[key] ?? key}</h3><p>{component.ready ? (language === "ru" ? "Готов к работе" : "Ready") : (language === "ru" ? "Требует настройки" : "Needs setup")}</p></div>{component.version ? <code>{component.version}</code> : null}</div>)}</div><section className="info-card status-info"><h2>{language === "ru" ? "Активная конфигурация" : "Active configuration"}</h2><div className="detail-row"><span>{language === "ru" ? "Очередь" : "Queue"}</span><strong>{health.queue_paused ? (language === "ru" ? "На паузе" : "Paused") : (language === "ru" ? "Работает" : "Running")}</strong></div><div className="detail-row"><span>{language === "ru" ? "Провайдер" : "Provider"}</span><strong>{settings?.providers.find((provider) => provider.id === settings.active_provider_id)?.name ?? "—"}</strong></div><div className="detail-row"><span>{language === "ru" ? "Нативный движок" : "Native engine"}</span><strong>{settings?.asr_engine ?? "—"}</strong></div></section></div>;
+  if (!health) return <div className="status-page"><div className="page-heading"><div><span className="overline">DIAGNOSTICS</span><h1>{language === "ru" ? "Состояние системы" : "System status"}</h1><p>{language === "ru" ? "Проверяем компоненты в фоне…" : "Checking components in the background…"}</p></div></div></div>;
+  const transcriber = health.components.native_transcriber;
+  const installGuide = language === "ru" ? <>Установите <a href="https://github.com/pasrom/meeting-transcriber#installation" target="_blank" rel="noreferrer">Meeting Transcriber</a> через Homebrew: <code>brew tap pasrom/meeting-transcriber</code>, затем <code>brew install --cask meeting-transcriber</code>. Откройте приложение в строке меню → Settings → Advanced и включите <strong>Local Automation API</strong>. Подробнее: <a href="https://github.com/pasrom/meeting-transcriber/blob/main/docs/automation-api.md#availability" target="_blank" rel="noreferrer">документация API</a>.</> : <>Install <a href="https://github.com/pasrom/meeting-transcriber#installation" target="_blank" rel="noreferrer">Meeting Transcriber</a> with Homebrew: <code>brew tap pasrom/meeting-transcriber</code>, then <code>brew install --cask meeting-transcriber</code>. Open the menu-bar app → Settings → Advanced and enable <strong>Local Automation API</strong>. See the <a href="https://github.com/pasrom/meeting-transcriber/blob/main/docs/automation-api.md#availability" target="_blank" rel="noreferrer">API documentation</a> for details.</>;
+  return <div className="status-page"><div className="page-heading"><div><span className="overline">DIAGNOSTICS</span><h1>{language === "ru" ? "Состояние системы" : "System status"}</h1><p>{health.library}</p></div><div className="page-actions"><button className="secondary-button" onClick={updateYtDlp} disabled={updateState === "running"}>{updateState === "running" ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}{updateState === "done" ? (language === "ru" ? "Перезапустите приложение" : "Restart the app") : "yt-dlp"}</button><button className="secondary-button" onClick={onRescan}><RefreshCw size={16} />{language === "ru" ? "Пересканировать" : "Rescan"}</button></div></div><div className="health-grid">{Object.entries(health.components).map(([key, component]) => <div className={`health-card ${component.ready ? "ready" : "missing"}`} key={key}><div className="health-icon">{component.ready ? <CheckCircle2 size={22} /> : <AlertCircle size={22} />}</div><div><h3>{names[key] ?? key}</h3><p>{component.ready ? (language === "ru" ? "Готов к работе" : "Ready") : (language === "ru" ? "Требует настройки" : "Needs setup")}</p></div>{component.version ? <code>{component.version}</code> : null}</div>)}</div><section className={`info-card status-info ${transcriber?.ready ? "ready" : "missing"}`}><h2>Meeting Transcriber</h2>{transcriber?.ready ? <><div className="detail-row"><span>{language === "ru" ? "Адрес API" : "API address"}</span><strong>{transcriber.address}</strong></div><div className="detail-row"><span>{language === "ru" ? "Состояние" : "State"}</span><strong>{transcriber.state ?? (language === "ru" ? "Доступен" : "Available")}</strong></div></> : <div className="status-guidance"><p>{language === "ru" ? "Локальный API недоступен." : "The local API is unavailable."}</p><p>{installGuide}</p></div>}</section><section className="info-card status-info"><h2>{language === "ru" ? "Активная конфигурация" : "Active configuration"}</h2><div className="detail-row"><span>{language === "ru" ? "Очередь" : "Queue"}</span><strong>{health.queue_paused ? (language === "ru" ? "На паузе" : "Paused") : (language === "ru" ? "Работает" : "Running")}</strong></div><div className="detail-row"><span>{language === "ru" ? "Провайдер" : "Provider"}</span><strong>{settings?.providers.find((provider) => provider.id === settings.active_provider_id)?.name ?? "—"}</strong></div><div className="detail-row"><span>{language === "ru" ? "Нативный движок" : "Native engine"}</span><strong>{settings?.asr_engine ?? "—"}</strong></div></section></div>;
 }
