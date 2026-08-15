@@ -70,6 +70,31 @@ def test_rpm_limiter_spaces_requests_even_when_window_has_capacity(monkeypatch) 
     assert limiter.status()["request_interval_seconds"] == 12.0
 
 
+def test_request_limiter_respects_hour_and_day_windows(monkeypatch) -> None:
+    now = 1000.0
+    sleeps: list[float] = []
+
+    def fake_monotonic() -> float:
+        return now
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr("ytsum.providers.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("ytsum.providers.asyncio.sleep", fake_sleep)
+    limiter = AsyncRateLimiter(None, requests_per_hour=2, requests_per_day=10)
+
+    asyncio.run(limiter.acquire())
+    asyncio.run(limiter.acquire())
+    asyncio.run(limiter.acquire())
+
+    assert sleeps == [3600.0]
+    assert limiter.status()["requests_in_hour"] == 1
+    assert limiter.status()["requests_in_day"] == 3
+
+
 def test_scheduler_retries_a_failed_source_on_another_source(monkeypatch) -> None:
     sources = [
         ProviderSettings(id="offline-retry", name="Offline", kind="openai", base_url="http://offline/v1", model="a"),
@@ -203,6 +228,15 @@ def test_scheduler_skips_source_when_tpm_window_is_full(monkeypatch) -> None:
 
     assert used == ["tpm-ready"]
     assert result.markdown.endswith("summary\n")
+
+
+def test_provider_rejects_request_above_hourly_token_limit() -> None:
+    provider = ProviderSettings(
+        id="tph-small", name="Tiny TPH", kind="openai",
+        base_url="http://tph-small/v1", model="a", tokens_per_hour=10,
+    )
+    with pytest.raises(ProviderError, match="above the 10 TPH limit"):
+        asyncio.run(ProviderClient(provider).chat(system="system", user="user", estimated_tokens=11))
 
 
 def test_progress_reports_request_plan_and_actual_source(monkeypatch) -> None:

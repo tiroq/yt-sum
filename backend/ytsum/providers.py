@@ -19,15 +19,34 @@ def estimate_chat_tokens(system: str, user: str, max_output_tokens: int) -> int:
 
 
 class AsyncRateLimiter:
-    def __init__(self, requests_per_minute: int | None) -> None:
+    def __init__(self, requests_per_minute: int | None, requests_per_hour: int = 0, requests_per_day: int = 0) -> None:
         self.requests_per_minute = requests_per_minute
+        self.requests_per_hour = max(0, requests_per_hour)
+        self.requests_per_day = max(0, requests_per_day)
         self._timestamps: deque[float] = deque()
         self._lock = asyncio.Lock()
         self.waiting = 0
         self._next_allowed_at = 0.0
 
+    @property
+    def limits(self) -> tuple[tuple[str, int, int], ...]:
+        return tuple(
+            (name, limit, seconds)
+            for name, limit, seconds in (
+                ("minute", self.requests_per_minute or 0, 60),
+                ("hour", self.requests_per_hour, 3600),
+                ("day", self.requests_per_day, 86400),
+            )
+            if limit
+        )
+
+    @property
+    def signature(self) -> tuple[int, int, int]:
+        return (self.requests_per_minute or 0, self.requests_per_hour, self.requests_per_day)
+
     def _prune(self, now: float) -> None:
-        while self._timestamps and now - self._timestamps[0] >= 60:
+        longest_window = max((seconds for _, _, seconds in self.limits), default=0)
+        while longest_window and self._timestamps and now - self._timestamps[0] >= longest_window:
             self._timestamps.popleft()
 
     @property
@@ -36,33 +55,40 @@ class AsyncRateLimiter:
             return 0.0
         return 60.0 / self.requests_per_minute
 
+    def count_in_window(self, seconds: int) -> int:
+        now = time.monotonic()
+        self._prune(now)
+        return sum(1 for timestamp in self._timestamps if now - timestamp < seconds)
+
+    def _retry_after_seconds(self, now: float) -> float:
+        self._prune(now)
+        delays = [max(0.0, self._next_allowed_at - now)] if self.requests_per_minute else []
+        for _, limit, seconds in self.limits:
+            timestamps = [timestamp for timestamp in self._timestamps if now - timestamp < seconds]
+            if len(timestamps) >= limit:
+                delays.append(max(0.0, seconds - (now - timestamps[0])))
+        return max(delays, default=0.0)
+
     async def acquire(self) -> None:
-        if not self.requests_per_minute:
+        if not self.limits:
             return
         self.waiting += 1
         try:
             while True:
                 async with self._lock:
                     now = time.monotonic()
-                    self._prune(now)
-                    spacing_delay = max(0.0, self._next_allowed_at - now)
-                    if len(self._timestamps) < self.requests_per_minute and not spacing_delay:
+                    delay = self._retry_after_seconds(now)
+                    if not delay:
                         self._timestamps.append(now)
                         self._next_allowed_at = now + self.interval_seconds
                         return
-                    window_delay = 60 - (now - self._timestamps[0]) if len(self._timestamps) >= self.requests_per_minute else 0.0
-                    delay = max(0.05, spacing_delay, window_delay)
                 await asyncio.sleep(delay)
         finally:
             self.waiting = max(0, self.waiting - 1)
 
     def retry_after_seconds(self) -> float:
         now = time.monotonic()
-        self._prune(now)
-        spacing_delay = max(0.0, self._next_allowed_at - now) if self.requests_per_minute else 0.0
-        if self.requests_per_minute and len(self._timestamps) >= self.requests_per_minute:
-            return max(spacing_delay, 60 - (now - self._timestamps[0]))
-        return spacing_delay
+        return self._retry_after_seconds(now)
 
     def status(self) -> dict[str, int | float | None]:
         now = time.monotonic()
@@ -70,7 +96,11 @@ class AsyncRateLimiter:
         retry_after = self.retry_after_seconds()
         return {
             "requests_per_minute": self.requests_per_minute,
-            "requests_in_window": len(self._timestamps),
+            "requests_per_hour": self.requests_per_hour,
+            "requests_per_day": self.requests_per_day,
+            "requests_in_window": self.count_in_window(60),
+            "requests_in_hour": self.count_in_window(3600),
+            "requests_in_day": self.count_in_window(86400),
             "waiting": self.waiting,
             "retry_after_seconds": round(retry_after, 1),
             "request_interval_seconds": round(self.interval_seconds, 1),
@@ -78,56 +108,92 @@ class AsyncRateLimiter:
 
 
 class AsyncTokenRateLimiter:
-    def __init__(self, tokens_per_minute: int) -> None:
+    def __init__(self, tokens_per_minute: int, tokens_per_hour: int = 0, tokens_per_day: int = 0) -> None:
         self.tokens_per_minute = max(0, tokens_per_minute)
+        self.tokens_per_hour = max(0, tokens_per_hour)
+        self.tokens_per_day = max(0, tokens_per_day)
         self._events: deque[tuple[float, int]] = deque()
         self._lock = asyncio.Lock()
         self.waiting = 0
 
+    @property
+    def limits(self) -> tuple[tuple[str, int, int], ...]:
+        return tuple(
+            (name, limit, seconds)
+            for name, limit, seconds in (
+                ("minute", self.tokens_per_minute, 60),
+                ("hour", self.tokens_per_hour, 3600),
+                ("day", self.tokens_per_day, 86400),
+            )
+            if limit
+        )
+
+    @property
+    def signature(self) -> tuple[int, int, int]:
+        return (self.tokens_per_minute, self.tokens_per_hour, self.tokens_per_day)
+
     def _prune(self, now: float) -> None:
-        while self._events and now - self._events[0][0] >= 60:
+        longest_window = max((seconds for _, _, seconds in self.limits), default=0)
+        while longest_window and self._events and now - self._events[0][0] >= longest_window:
             self._events.popleft()
 
-    def tokens_in_window(self) -> int:
+    def tokens_in_window(self, seconds: int = 60) -> int:
         now = time.monotonic()
         self._prune(now)
-        return sum(tokens for _, tokens in self._events)
+        return sum(tokens for timestamp, tokens in self._events if now - timestamp < seconds)
+
+    def limit_exceeded(self, tokens: int) -> bool:
+        return any(tokens > limit for _, limit, _ in self.limits)
 
     async def acquire(self, tokens: int) -> None:
-        if not self.tokens_per_minute:
+        if not self.limits:
             return
-        if tokens > self.tokens_per_minute:
-            raise ProviderError(f"Estimated request uses {tokens} tokens, above the {self.tokens_per_minute} TPM limit")
+        exceeded = [(name, limit) for name, limit, _ in self.limits if tokens > limit]
+        if exceeded:
+            name, limit = min(exceeded, key=lambda item: item[1])
+            raise ProviderError(f"Estimated request uses {tokens} tokens, above the {limit} TP{name[0].upper()} limit")
         self.waiting += 1
         try:
             while True:
                 async with self._lock:
                     now = time.monotonic()
                     self._prune(now)
-                    used = sum(amount for _, amount in self._events)
-                    if used + tokens <= self.tokens_per_minute:
+                    delays = []
+                    for _, limit, seconds in self.limits:
+                        used = sum(amount for timestamp, amount in self._events if now - timestamp < seconds)
+                        if used + tokens > limit:
+                            first_timestamp = next(timestamp for timestamp, _ in self._events if now - timestamp < seconds)
+                            delays.append(max(0.0, seconds - (now - first_timestamp)))
+                    if not delays:
                         self._events.append((now, tokens))
                         return
-                    delay = max(0.05, 60 - (now - self._events[0][0]))
+                    delay = max(delays)
                 await asyncio.sleep(delay)
         finally:
             self.waiting = max(0, self.waiting - 1)
 
     def retry_after_seconds(self, tokens: int = 1) -> float:
-        if not self.tokens_per_minute or tokens > self.tokens_per_minute:
+        if not self.limits or self.limit_exceeded(tokens):
             return 0.0
         now = time.monotonic()
         self._prune(now)
-        used = sum(amount for _, amount in self._events)
-        if used + tokens <= self.tokens_per_minute:
-            return 0.0
-        return max(0.0, 60 - (now - self._events[0][0]))
+        delays = []
+        for _, limit, seconds in self.limits:
+            window_events = [(timestamp, amount) for timestamp, amount in self._events if now - timestamp < seconds]
+            used = sum(amount for _, amount in window_events)
+            if used + tokens > limit:
+                delays.append(max(0.0, seconds - (now - window_events[0][0])))
+        return max(delays, default=0.0)
 
     def status(self) -> dict[str, int | float]:
         retry_after = self.retry_after_seconds()
         return {
             "tokens_per_minute": self.tokens_per_minute,
-            "tokens_in_window": self.tokens_in_window(),
+            "tokens_per_hour": self.tokens_per_hour,
+            "tokens_per_day": self.tokens_per_day,
+            "tokens_in_window": self.tokens_in_window(60),
+            "tokens_in_hour": self.tokens_in_window(3600),
+            "tokens_in_day": self.tokens_in_window(86400),
             "token_waiting": self.waiting,
             "token_retry_after_seconds": round(retry_after, 1),
         }
@@ -163,13 +229,15 @@ class ProviderClient:
     def __init__(self, provider: ProviderSettings) -> None:
         self.provider = provider
         current = self._limiters.get(provider.id)
-        if current is None or current.requests_per_minute != provider.requests_per_minute:
-            current = AsyncRateLimiter(provider.requests_per_minute)
+        request_signature = (provider.requests_per_minute or 0, provider.requests_per_hour, provider.requests_per_day)
+        if current is None or current.signature != request_signature:
+            current = AsyncRateLimiter(provider.requests_per_minute, provider.requests_per_hour, provider.requests_per_day)
             self._limiters[provider.id] = current
         self.limiter = current
         token_limiter = self._token_limiters.get(provider.id)
-        if token_limiter is None or token_limiter.tokens_per_minute != provider.tokens_per_minute:
-            token_limiter = AsyncTokenRateLimiter(provider.tokens_per_minute)
+        token_signature = (provider.tokens_per_minute, provider.tokens_per_hour, provider.tokens_per_day)
+        if token_limiter is None or token_limiter.signature != token_signature:
+            token_limiter = AsyncTokenRateLimiter(provider.tokens_per_minute, provider.tokens_per_hour, provider.tokens_per_day)
             self._token_limiters[provider.id] = token_limiter
         self.token_limiter = token_limiter
         capacity = self._capacity_limiters.get(provider.id)
@@ -205,17 +273,25 @@ class ProviderClient:
         request_retry_after = self.limiter.retry_after_seconds()
         token_retry_after = self.token_limiter.retry_after_seconds(estimated_tokens)
         capacity_available = self.capacity_limiter.available
-        token_limit_exceeded = bool(self.provider.tokens_per_minute and estimated_tokens > self.provider.tokens_per_minute)
+        token_limit_exceeded = self.token_limiter.limit_exceeded(estimated_tokens)
         return {
             "available": bool(self.provider.enabled and not cooldown and not request_retry_after and not token_retry_after and not token_limit_exceeded and capacity_available > 0),
             "retry_after_seconds": round(max(cooldown, request_retry_after, token_retry_after), 1),
             "capacity_available": capacity_available,
             "in_flight": int(activity["in_flight"]),
-            "requests_in_window": len(self.limiter._timestamps),
+            "requests_in_window": self.limiter.count_in_window(60),
+            "requests_in_hour": self.limiter.count_in_window(3600),
+            "requests_in_day": self.limiter.count_in_window(86400),
             "requests_per_minute": self.provider.requests_per_minute or 0,
+            "requests_per_hour": self.provider.requests_per_hour,
+            "requests_per_day": self.provider.requests_per_day,
             "request_interval_seconds": self.limiter.interval_seconds,
-            "tokens_in_window": self.token_limiter.tokens_in_window(),
+            "tokens_in_window": self.token_limiter.tokens_in_window(60),
+            "tokens_in_hour": self.token_limiter.tokens_in_window(3600),
+            "tokens_in_day": self.token_limiter.tokens_in_window(86400),
             "tokens_per_minute": self.provider.tokens_per_minute,
+            "tokens_per_hour": self.provider.tokens_per_hour,
+            "tokens_per_day": self.provider.tokens_per_day,
             "token_limit_exceeded": token_limit_exceeded,
         }
 
@@ -266,8 +342,6 @@ class ProviderClient:
         if cooldown:
             raise ProviderError(f"{self.provider.name} is cooling down for {cooldown:.1f}s")
         tokens = estimated_tokens or estimate_chat_tokens(system, user, self.provider.max_output_tokens)
-        if self.provider.tokens_per_minute and tokens > self.provider.tokens_per_minute:
-            raise ProviderError(f"Estimated request uses {tokens} tokens, above the {self.provider.tokens_per_minute} TPM limit")
         await self.token_limiter.acquire(tokens)
         await self.limiter.acquire()
         await self.capacity_limiter.acquire()

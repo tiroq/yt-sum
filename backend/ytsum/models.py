@@ -113,7 +113,11 @@ class ProviderSettings(BaseModel):
     model: str = ""
     enabled: bool = True
     requests_per_minute: int | None = Field(default=None, ge=1, le=10000)
+    requests_per_hour: int = Field(default=0, ge=0, le=10_000_000)
+    requests_per_day: int = Field(default=0, ge=0, le=100_000_000)
     tokens_per_minute: int = Field(default=0, ge=0, le=100_000_000)
+    tokens_per_hour: int = Field(default=0, ge=0, le=1_000_000_000)
+    tokens_per_day: int = Field(default=0, ge=0, le=10_000_000_000)
     max_in_flight: int = Field(default=1, ge=1, le=100)
     temperature: float = Field(default=0, ge=0, le=2)
     max_output_tokens: int = Field(default=2048, ge=128, le=131072)

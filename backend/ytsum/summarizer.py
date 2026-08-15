@@ -82,12 +82,41 @@ class MultiProviderScheduler:
 
     @classmethod
     def shared(cls, providers: list[ProviderSettings]) -> "MultiProviderScheduler":
-        key = tuple(sorted((provider.id, provider.base_url, provider.model, provider.requests_per_minute, provider.tokens_per_minute, provider.max_in_flight) for provider in providers))
+        key = tuple(sorted((
+            provider.id,
+            provider.base_url,
+            provider.model,
+            provider.requests_per_minute,
+            provider.requests_per_hour,
+            provider.requests_per_day,
+            provider.tokens_per_minute,
+            provider.tokens_per_hour,
+            provider.tokens_per_day,
+            provider.max_in_flight,
+        ) for provider in providers))
         scheduler = cls._shared.get(key)
         if scheduler is None:
             scheduler = cls(providers)
             cls._shared[key] = scheduler
         return scheduler
+
+    @staticmethod
+    def _request_windows_open(provider: ProviderSettings, availability: dict[str, int | float | bool], pending: int) -> bool:
+        windows = (
+            (provider.requests_per_minute or 0, int(availability.get("requests_in_window", 0))),
+            (provider.requests_per_hour, int(availability.get("requests_in_hour", 0))),
+            (provider.requests_per_day, int(availability.get("requests_in_day", 0))),
+        )
+        return all(not limit or pending < max(0, limit - used) for limit, used in windows)
+
+    @staticmethod
+    def _token_windows_open(provider: ProviderSettings, availability: dict[str, int | float | bool], pending_tokens: int, estimated_tokens: int) -> bool:
+        windows = (
+            (provider.tokens_per_minute, int(availability.get("tokens_in_window", 0))),
+            (provider.tokens_per_hour, int(availability.get("tokens_in_hour", 0))),
+            (provider.tokens_per_day, int(availability.get("tokens_in_day", 0))),
+        )
+        return all(not limit or pending_tokens + estimated_tokens <= max(0, limit - used) for limit, used in windows)
 
     async def _pick_source(self, excluded: set[str], estimated_tokens: int) -> tuple[int, ProviderSettings, ProviderClient] | None:
         while True:
@@ -105,14 +134,8 @@ class MultiProviderScheduler:
                     pending = self._loads[index]
                     pending_tokens = self._token_loads[index]
                     capacity_open = pending < int(availability["capacity_available"])
-                    rpm_open = (
-                        not provider.requests_per_minute
-                        or pending < max(0, provider.requests_per_minute - int(availability["requests_in_window"]))
-                    )
-                    tpm_open = (
-                        not provider.tokens_per_minute
-                        or pending_tokens + estimated_tokens <= max(0, provider.tokens_per_minute - int(availability["tokens_in_window"]))
-                    )
+                    rpm_open = self._request_windows_open(provider, availability, pending)
+                    tpm_open = self._token_windows_open(provider, availability, pending_tokens, estimated_tokens)
                     if availability["token_limit_exceeded"]:
                         token_blocked += 1
                     if availability["available"] and capacity_open and rpm_open and tpm_open:
