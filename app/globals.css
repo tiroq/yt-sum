@@ -275,7 +275,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .source-pool-toggle { margin: -4px 0 15px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: #f6faf7; }
 .source-status { min-height: 29px; margin-top: 11px; padding: 8px 9px; border-radius: 8px; color: #52635a; background: #eef4f0; font: 9px/1.4 ui-monospace, SFMono-Regular, monospace; }
 .template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 12px; }
-.template-card { padding: 16px; border: 1px solid var(--line); background: #fbfaf6; border-radius: 13px; }
+.template-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--line); background: #fbfaf6; border-radius: 13px; }
+.template-card strong { min-width: 0; }
 .template-card.active { border-color: #7fa28f; box-shadow: 0 0 0 2px rgba(49,98,76,.08); }
 .template-title-row { min-height: 30px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .health-grid { max-width: 1180px; margin: 0 auto 18px; display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
