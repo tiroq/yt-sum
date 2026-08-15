@@ -177,6 +177,11 @@ function statusLabel(status: string, language: "ru" | "en") {
   return labels[status]?.[language === "ru" ? 0 : 1] ?? status;
 }
 
+function IconButton({ tooltip, className = "", children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { tooltip: string }) {
+  const tooltipId = useId();
+  return <span className="tooltip-wrap"><button {...props} className={className} aria-describedby={tooltipId}>{children}</button><span className="tooltip" id={tooltipId} role="tooltip">{tooltip}</span></span>;
+}
+
 export default function Home() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -319,7 +324,7 @@ export default function Home() {
         <div className="brand-row">
           <div className="brand-mark"><Sparkles size={19} strokeWidth={2.4} /></div>
           <div><div className="brand-name">YT Sum</div><div className="brand-subtitle">local intelligence</div></div>
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close"><X size={18} /></button>
+          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></button>
         </div>
 
         <button className="add-button" onClick={() => setAddOpen(true)}><Plus size={18} />{t.add}</button>
@@ -328,6 +333,8 @@ export default function Home() {
           <button className={view === "library" && filter === "all" ? "nav-item active" : "nav-item"} onClick={() => { setView("library"); setFilter("all"); }}><Archive size={18} />{t.all}<span>{videos.length}</span></button>
           <button className={view === "library" && filter === "favorite" ? "nav-item active" : "nav-item"} onClick={() => { setView("library"); setFilter("favorite"); }}><Heart size={18} />{t.favorites}<span>{videos.filter((v) => v.favorite).length}</span></button>
           <button className={view === "library" && filter === "attention" ? "nav-item active" : "nav-item"} onClick={() => { setView("library"); setFilter("attention"); }}><AlertCircle size={18} />{t.attention}<span>{videos.filter((v) => v.status === "attention").length}</span></button>
+          <button className={view === "library" && filter === "archived" ? "nav-item active" : "nav-item"} onClick={() => { setView("library"); setFilter("archived"); }}><Archive size={18} />{t.archived}<span>{archivedVideos.length}</span></button>
+          {playlists.length ? <div className="playlist-nav"><div className="sidebar-section-label">{language === "ru" ? "Плейлисты" : "Playlists"}</div>{playlists.map((playlist) => <button key={playlist.id} className={view === "library" && filter === "playlist" && playlistId === playlist.id ? "nav-item active" : "nav-item"} onClick={() => { setView("library"); setFilter("playlist"); setPlaylistId(playlist.id); }}><ListChecks size={18} /><span title={playlist.title}>{playlist.title}</span><span>{playlist.video_count}</span></button>)}</div> : null}
         </nav>
 
         <div className="sidebar-section-label">{t.library}</div>
@@ -341,7 +348,9 @@ export default function Home() {
               </div>
               <div className="video-card-copy"><strong>{video.title}</strong><small>{video.channel || statusLabel(video.status, language)}</small><div className={`status-dot ${video.status}`} /> </div>
             </button>
-          ))}
+              <IconButton className="quick-archive-button" onClick={() => void setArchived(video, !video.archived)} aria-label={video.archived ? t.restore : t.archive} tooltip={video.archived ? "Вернуть видео в библиотеку. Оно снова появится среди обычных видео." : "Архивировать видео. Оно исчезнет из обычного списка, но файлы сохранятся."}><Archive size={15} /></IconButton>
+            </div>
+          ))}</section>)}
         </div>
 
         <div className="sidebar-footer">
@@ -352,7 +361,7 @@ export default function Home() {
 
       <section className="workspace">
         <header className="topbar">
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Menu"><Menu size={20} /></button>
+          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Menu" tooltip="Открыть меню навигации. Фокус перейдёт в боковую панель."><Menu size={20} /></button>
           <div className="breadcrumb"><span>YT Sum</span><span>/</span><strong>{view === "library" ? detail?.meta.title ?? t.library : view === "settings" ? t.settings : t.status}</strong></div>
           <div className="topbar-actions">
             <div className={`online-pill ${online ? "" : "offline"}`}>{online ? <Wifi size={14} /> : <WifiOff size={14} />}{online ? "Local" : "Offline"}</div>
@@ -367,9 +376,9 @@ export default function Home() {
         ) : detail ? (
           <>
             <section className="video-hero">
-              <div className="hero-thumb"><img src={detail.meta.thumbnail_file ? `${API}/videos/${detail.meta.video_id}/thumbnail` : `https://i.ytimg.com/vi/${detail.meta.video_id}/hqdefault.jpg`} alt="" /><a href={detail.meta.source_url} target="_blank" rel="noreferrer" aria-label="Open video"><Play size={20} fill="currentColor" /></a></div>
-              <div className="hero-copy"><div className="eyebrow"><span className={`status-badge ${detail.meta.status}`}>{statusLabel(detail.meta.status, language)}</span>{detail.meta.transcript ? <span><Languages size={13} />{detail.meta.transcript.language.toUpperCase()} · {detail.meta.transcript.kind}</span> : null}</div><h1>{detail.meta.title}</h1><p>{detail.meta.channel} {detail.meta.published_at ? `· ${detail.meta.published_at}` : ""} {detail.meta.duration_seconds ? `· ${formatDuration(detail.meta.duration_seconds)}` : ""}</p><div className="tag-row">{detail.meta.tags.map((tagName) => <span key={tagName}><Tag size={11} />{tagName}</span>)}</div></div>
-              <div className="hero-actions"><button className={`icon-button ${detail.meta.favorite ? "favorite" : ""}`} onClick={toggleFavorite} aria-label="Favorite"><Heart size={19} fill={detail.meta.favorite ? "currentColor" : "none"} /></button><button className="icon-button" onClick={editTags} aria-label="Edit tags"><Tag size={18} /></button><button className="icon-button" onClick={refreshVideo} aria-label="Refresh"><RefreshCw size={18} /></button><button className="icon-button danger-hover" onClick={deleteVideo} aria-label="Delete"><Trash2 size={18} /></button></div>
+              <div className="hero-thumb"><img src={detail.meta.thumbnail_file ? `${API}/videos/${detail.meta.video_id}/thumbnail` : `https://i.ytimg.com/vi/${detail.meta.video_id}/hqdefault.jpg`} alt="" /><span className="tooltip-wrap"><a href={detail.meta.source_url} target="_blank" rel="noreferrer" aria-label="Open video" aria-describedby="open-video-tooltip"><Play size={20} fill="currentColor" /></a><span className="tooltip" id="open-video-tooltip" role="tooltip">Открыть видео на YouTube. Откроется новая вкладка.</span></span></div>
+              <div className="hero-copy"><div className="eyebrow"><span className={`status-badge ${detail.meta.status}`}>{statusLabel(detail.meta.status, language)}</span>{detail.meta.transcript ? <span><Languages size={13} />{detail.meta.transcript.language.toUpperCase()} · {detail.meta.transcript.kind}</span> : null}</div><h1>{detail.meta.title}</h1><p>{detail.meta.channel} {detail.meta.published_at ? `· ${detail.meta.published_at}` : ""} {detail.meta.duration_seconds !== null ? `· ${formatDuration(detail.meta.duration_seconds)}` : ""}</p><div className="tag-row">{detail.meta.tags.map((tagName) => <span key={tagName}><Tag size={11} />{tagName}</span>)}</div></div>
+              <div className="hero-actions"><IconButton className={`icon-button ${detail.meta.favorite ? "favorite" : ""}`} onClick={toggleFavorite} aria-label={detail.meta.favorite ? "Remove from favorites" : "Add to favorites"} tooltip={detail.meta.favorite ? "Убрать из избранного. Видео исчезнет из фильтра «Избранное»." : "Добавить в избранное. Видео появится в фильтре «Избранное»."}><Heart size={19} fill={detail.meta.favorite ? "currentColor" : "none"} /></IconButton><IconButton className="icon-button" onClick={editTags} aria-label="Edit tags" tooltip="Изменить теги. Сохранённые теги будут заменены."><Tag size={18} /></IconButton><IconButton className="icon-button" onClick={refreshVideo} aria-label="Refresh" tooltip="Обновить видео. Сбор данных будет поставлен в очередь."><RefreshCw size={18} /></IconButton><IconButton className="icon-button danger-hover" onClick={deleteVideo} aria-label="Delete" tooltip="Удалить видео. Затем можно удалить и локальные файлы."><Trash2 size={18} /></IconButton></div>
             </section>
 
             <nav className="tabs">
@@ -391,7 +400,8 @@ export default function Home() {
 
       {addOpen ? <AddDialog links={links} setLinks={setLinks} onClose={() => setAddOpen(false)} onAdd={addVideos} language={language} /> : null}
       {queueOpen ? <QueuePanel jobs={jobs} paused={health?.queue_paused ?? false} close={() => setQueueOpen(false)} refresh={refresh} language={language} /> : null}
-      {error && online ? <div className="toast"><AlertCircle size={18} /><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div> : null}
+      {error && online ? <div className="toast"><AlertCircle size={18} /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error" tooltip="Закрыть сообщение об ошибке. Выполненное действие не отменяется."><X size={16} /></IconButton></div> : null}
+      {notice ? <div className="toast success" role="status"><CheckCircle2 size={18} /><span>{notice}</span><IconButton onClick={() => setNotice("")} aria-label="Dismiss notification" tooltip="Закрыть уведомление."><X size={16} /></IconButton></div> : null}
     </main>
   );
 }
@@ -426,7 +436,7 @@ function OfflineState({ message, onRetry, language }: { message: string; onRetry
 }
 
 function AddDialog({ links, setLinks, onClose, onAdd, language }: { links: string; setLinks: (value: string) => void; onClose: () => void; onAdd: () => void; language: "ru" | "en" }) {
-  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-dialog-title"><div className="modal-heading"><div><span className="overline">YOUTUBE</span><h2 id="add-dialog-title">{language === "ru" ? "Добавить в библиотеку" : "Add to library"}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button></div><p>{language === "ru" ? "Вставьте одну или несколько ссылок — по одной на строку." : "Paste one or more links, one per line."}</p><textarea id="youtube-links" name="youtube-links" value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={7} aria-label={language === "ru" ? "Ссылки YouTube" : "YouTube links"} /><div className="modal-note"><Clock3 size={16} /><span>{language === "ru" ? "Видео обрабатываются по одному с паузами 30–90 секунд." : "Videos are processed one at a time with 30–90 second pauses."}</span></div><div className="modal-actions"><button className="ghost-button" onClick={onClose}>{language === "ru" ? "Отмена" : "Cancel"}</button><button className="primary-button" onClick={onAdd} disabled={!links.trim()}><Plus size={17} />{language === "ru" ? "Добавить в очередь" : "Add to queue"}</button></div></section></div>;
+  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-dialog-title"><div className="modal-heading"><div><span className="overline">YOUTUBE</span><h2 id="add-dialog-title">{language === "ru" ? "Добавить в библиотеку" : "Add to library"}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close" tooltip="Закрыть окно. Несохранённые ссылки будут потеряны."><X size={18} /></button></div><p>{language === "ru" ? "Вставьте одну или несколько ссылок — по одной на строку." : "Paste one or more links, one per line."}</p><textarea id="youtube-links" name="youtube-links" value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={7} aria-label={language === "ru" ? "Ссылки YouTube" : "YouTube links"} /><div className="modal-note"><Clock3 size={16} /><span>{language === "ru" ? "Видео обрабатываются по одному с паузами 30–90 секунд." : "Videos are processed one at a time with 30–90 second pauses."}</span></div><div className="modal-actions"><button className="ghost-button" onClick={onClose}>{language === "ru" ? "Отмена" : "Cancel"}</button><button className="primary-button" onClick={onAdd} disabled={!links.trim()}><Plus size={17} />{language === "ru" ? "Добавить в очередь" : "Add to queue"}</button></div></section></div>;
 }
 
 function QueuePanel({ jobs, paused, close, refresh, language }: { jobs: Job[]; paused: boolean; close: () => void; refresh: () => Promise<void>; language: "ru" | "en" }) {
