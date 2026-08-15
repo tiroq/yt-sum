@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   Archive,
+  ArchiveX,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -349,7 +350,7 @@ export default function Home() {
               </div>
               <div className="video-card-copy"><strong>{video.title}</strong><small>{video.channel || statusLabel(video.status, language)}</small><div className={`status-dot ${video.status}`} /> </div>
             </button>
-              <IconButton className="quick-archive-button" onClick={() => void setArchived(video, !video.archived)} aria-label={video.archived ? t.restore : t.archive} tooltip={video.archived ? "Вернуть видео в библиотеку. Оно снова появится среди обычных видео." : "Архивировать видео. Оно исчезнет из обычного списка, но файлы сохранятся."}><Archive size={15} /></IconButton>
+              <IconButton className="quick-archive-button" onClick={(event) => { event.stopPropagation(); void setArchived(video, !video.archived); }} aria-label={video.archived ? t.restore : t.archive} tooltip={video.archived ? "Вернуть видео в библиотеку. Оно снова появится среди обычных видео." : "Архивировать видео. Оно исчезнет из обычного списка, но файлы сохранятся."}>{video.archived ? <ArchiveX size={15} /> : <Archive size={15} />}</IconButton>
             </div>
           ))}</section>)}
         </div>
