@@ -81,9 +81,11 @@ def list_videos(
     query: str = "",
     status: str = "",
     favorite: bool | None = None,
+    archived: bool = False,
     sort: str = "added_desc",
 ) -> dict:
-    return {"items": context().storage().list_videos(query=query, status=status, favorite=favorite, sort=sort)}
+    return {"items": context().storage().list_videos(query=query, status=status, favorite=favorite, archived=archived, sort=sort)}
+
 
 
 @app.post("/api/videos", status_code=202)
@@ -131,7 +133,7 @@ def get_thumbnail(video_id: str):
 
 @app.patch("/api/videos/{video_id}")
 def patch_video(video_id: str, request: UpdateVideoRequest) -> dict:
-    meta = context().storage().patch_video(video_id, request.favorite, request.tags)
+    meta = context().storage().patch_video(video_id, request.favorite, request.tags, request.archived)
     if not meta:
         raise HTTPException(404, "Video not found")
     return meta.model_dump(mode="json")
