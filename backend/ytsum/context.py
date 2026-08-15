@@ -31,9 +31,10 @@ class ApplicationContext:
                 self._storage.rescan()
         if old_summary_signature != self._summary_signature(saved):
             self.storage().mark_summaries_stale()
+        self.queue.notify()
         return saved
 
     @staticmethod
     def _summary_signature(settings: AppSettings) -> tuple:
-        providers = tuple((item.id, item.base_url, item.model, item.temperature, item.max_output_tokens) for item in settings.providers)
-        return (settings.active_provider_id, settings.summary_language, settings.summary_mode, settings.summary_template_id, settings.chunk_characters, providers)
+        providers = tuple((item.id, item.base_url, item.model, item.enabled, item.temperature, item.max_output_tokens) for item in settings.providers)
+        return (settings.active_provider_id, settings.parallel_summary_sources, settings.summary_language, settings.summary_mode, settings.summary_template_id, settings.chunk_characters, providers)
