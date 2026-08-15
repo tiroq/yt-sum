@@ -152,6 +152,23 @@ def test_provider_pool_settings_persist_and_expose_status(monkeypatch, tmp_path:
         assert all("requests_in_window" in item and "in_flight" in item for item in statuses)
 
 
+def test_removed_default_provider_stays_removed(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+
+    from ytsum import api
+
+    api._context = None
+    with TestClient(api.app) as client:
+        settings = client.get("/api/settings").json()
+        settings["providers"] = [provider for provider in settings["providers"] if provider["id"] != "openai-compatible"]
+        settings["active_provider_id"] = settings["providers"][0]["id"]
+        assert client.put("/api/settings", json=settings).status_code == 200
+
+        reloaded = client.get("/api/settings").json()
+        assert {provider["id"] for provider in reloaded["providers"]} == {"ollama"}
+
+
 def test_local_api_removes_only_finished_job_history(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))

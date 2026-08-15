@@ -56,6 +56,3 @@ class SettingsRepository:
     def _merge_builtins(settings: AppSettings) -> None:
         known_templates = {item.id for item in settings.templates}
         settings.templates.extend(item for item in DEFAULT_TEMPLATES if item.id not in known_templates)
-        known_providers = {item.id for item in settings.providers}
-        settings.providers.extend(item for item in DEFAULT_PROVIDERS if item.id not in known_providers)
-
