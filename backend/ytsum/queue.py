@@ -555,6 +555,8 @@ class ProcessingQueue:
         )
         if not primary_provider:
             raise RuntimeError(f"Summary provider '{provider_id}' not found")
+        if not primary_provider.enabled:
+            raise RuntimeError(f"Summary provider '{provider_id}' is disabled")
         if overrides.get("model"):
             primary_provider = primary_provider.model_copy(update={"model": overrides["model"]})
         if not primary_provider.model:
