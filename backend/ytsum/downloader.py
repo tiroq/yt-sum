@@ -11,11 +11,12 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import yt_dlp
 
-from .captions import SubtitleChoice, select_subtitle
-from .models import AppSettings
+from .captions import SubtitleChoice, select_original_subtitle, select_subtitle
+from .models import AppSettings, PlaylistMeta
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+PLAYLIST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,200}$")
 
 
 class DownloadFailure(RuntimeError):
@@ -45,6 +46,26 @@ def normalize_youtube_url(value: str) -> tuple[str, str]:
     return video_id, f"https://www.youtube.com/watch?v={video_id}"
 
 
+def normalize_playlist_url(value: str) -> tuple[str, str]:
+    value = value.strip()
+    if "://" not in value:
+        value = "https://" + value
+    parsed = urlparse(value)
+    host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
+    playlist_id = parse_qs(parsed.query).get("list", [""])[0]
+    if host not in {"youtube.com", "music.youtube.com"} or not PLAYLIST_ID_RE.fullmatch(playlist_id):
+        raise ValueError(f"Unsupported or invalid YouTube playlist URL: {value}")
+    return playlist_id, f"https://www.youtube.com/playlist?list={playlist_id}"
+
+
+def is_playlist_url(value: str) -> bool:
+    try:
+        normalize_playlist_url(value)
+    except ValueError:
+        return False
+    return True
+
+
 @dataclass
 class ExtractedVideo:
     video_id: str
@@ -61,6 +82,19 @@ class ExtractedVideo:
     @property
     def available_languages(self) -> list[str]:
         return sorted(set(self.subtitles) | set(self.automatic_captions))
+
+
+@dataclass
+class PlaylistEntry:
+    video_id: str
+    source_url: str
+    position: int
+
+
+@dataclass
+class ExtractedPlaylist:
+    meta: PlaylistMeta
+    entries: list[PlaylistEntry]
 
 
 class YouTubeClient:
@@ -111,6 +145,32 @@ class YouTubeClient:
             automatic_captions=info.get("automatic_captions") or {},
         )
 
+    def extract_playlist(self, url: str) -> ExtractedPlaylist:
+        playlist_id, canonical_url = normalize_playlist_url(url)
+        options = self._base_options(bool(self.settings.cookie_file or self.settings.cookie_browser))
+        options.update({"noplaylist": False, "extract_flat": "discard_in_playlist", "skip_download": True})
+        try:
+            with yt_dlp.YoutubeDL(options) as downloader:
+                info = downloader.extract_info(canonical_url, download=False)
+        except yt_dlp.utils.DownloadError as error:
+            raise DownloadFailure(str(error)) from error
+        if not info:
+            raise DownloadFailure("yt-dlp could not read this playlist")
+        entries: list[PlaylistEntry] = []
+        seen: set[str] = set()
+        for position, entry in enumerate(info.get("entries") or [], start=1):
+            if not entry:
+                continue
+            video_id = entry.get("id") or ""
+            if not VIDEO_ID_RE.fullmatch(video_id) or video_id in seen:
+                continue
+            seen.add(video_id)
+            entries.append(PlaylistEntry(video_id=video_id, source_url=f"https://www.youtube.com/watch?v={video_id}", position=position))
+        return ExtractedPlaylist(
+            meta=PlaylistMeta(id=playlist_id, title=info.get("title") or f"YouTube playlist {playlist_id}", source_url=canonical_url, channel=info.get("channel") or info.get("uploader") or "", video_count=len(entries)),
+            entries=entries,
+        )
+
     def _extract_once(self, url: str, use_cookies: bool) -> dict | None:
         options = self._base_options(use_cookies)
         options["skip_download"] = True
@@ -128,6 +188,11 @@ class YouTubeClient:
             self.settings.secondary_language,
             video.original_language,
             self.settings.allow_any_language,
+        )
+
+    def choose_original_transcript(self, video: ExtractedVideo) -> SubtitleChoice | None:
+        return select_original_subtitle(
+            video.subtitles, video.automatic_captions, video.original_language
         )
 
     def download_subtitle(self, video: ExtractedVideo, choice: SubtitleChoice, work_dir: Path) -> Path:
@@ -194,4 +259,3 @@ class YouTubeClient:
         destination = folder / f"thumbnail{suffix}"
         destination.write_bytes(response.content)
         return destination
-
