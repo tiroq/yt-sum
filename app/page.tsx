@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { formatDuration } from "./duration";
 import { shouldApplySettingsRefresh } from "./settings-refresh";
 
 const API = process.env.NEXT_PUBLIC_YTSUM_API_URL ?? "http://127.0.0.1:8765/api";
