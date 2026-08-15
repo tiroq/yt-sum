@@ -299,6 +299,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .queue-stat-grid strong { font-size: 20px; }
 .queue-stat-grid small { color: var(--muted); font-size: 9px; }
 .queue-current-stage { margin: 13px 0 0; color: var(--muted); font-size: 11px; }
+.pipeline-panel { max-width: 1180px; margin: 0 auto 18px; padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
+.pipeline-graph { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 14px 2px 5px; }
+.pipeline-step { display: flex; align-items: center; gap: 8px; min-width: 155px; }
+.pipeline-node { width: 155px; min-height: 96px; display: grid; align-content: start; gap: 9px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: #fbfaf6; }
+.pipeline-node.active { border-color: #7fa28f; box-shadow: 0 0 0 2px rgba(49,98,76,.1); }
+.pipeline-node.failed { border-color: #e4aaa1; background: #fff8f6; }
+.pipeline-node-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pipeline-node-top strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.pipeline-node-top b { font-size: 18px; }
+.pipeline-node-stats { display: grid; gap: 3px; color: var(--muted); font-size: 9px; }
+.pipeline-node small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.pipeline-arrow { color: var(--muted); font-size: 20px; }
 .status-info { max-width: 1180px; }
 .status-section { flex: none; }
 .status-layout > .status-info { width: 100%; margin: 0 auto; }
