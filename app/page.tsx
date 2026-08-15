@@ -35,6 +35,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { formatDuration } from "./duration";
+import { clipboardPrefillResult } from "./clipboard-prefill";
 import { shouldApplySettingsRefresh } from "./settings-refresh";
 
 const API = process.env.NEXT_PUBLIC_YTSUM_API_URL ?? "http://127.0.0.1:8765/api";
@@ -468,7 +469,7 @@ function DetailsPanel({ detail, jobs, language }: { detail: VideoDetail; jobs: J
     [language === "ru" ? "Модель summary" : "Summary model", detail.meta.current_summary?.model ?? "—"],
     [language === "ru" ? "Версий summary" : "Summary versions", String(detail.meta.summary_versions.length + (detail.meta.current_summary ? 1 : 0))],
   ];
-  return <div className="details-grid"><section className="info-card"><span className="overline">FILE-FIRST</span><h2>{language === "ru" ? "Данные видео" : "Video data"}</h2>{rows.map(([label, value]) => <div className="detail-row" key={label}><span>{label}</span><strong title={value}>{value}</strong></div>)}</section><section className="info-card"><span className="overline">PROCESSING</span><h2>{language === "ru" ? "История обработки" : "Processing history"}</h2>{jobs.length ? jobs.map((job) => <details className="job-history" key={job.id}><summary><div className={`job-state ${job.status}`}><Clock3 size={15} /></div><div><strong>{job.stage}</strong><p>{job.error || `${Math.round(job.progress * 100)}%`}</p></div></summary>{job.log.length ? <div className="job-log"><button className="text-button" onClick={() => navigator.clipboard.writeText(job.log.join("\n"))}><FileText size={13} />{language === "ru" ? "Копировать лог" : "Copy log"}</button><pre>{job.log.join("\n")}</pre></div> : null}</details>) : <p className="muted">{language === "ru" ? "Задач пока нет." : "No jobs yet."}</p>}</section></div>;
+  return <div className="details-grid"><section className="info-card"><span className="overline">FILE-FIRST</span><h2>{language === "ru" ? "Данные видео" : "Video data"}</h2>{rows.map(([label, value]) => <div className="detail-row" key={label}><span>{label}</span><strong title={value}>{value}</strong></div>)}<button className="secondary-button" onClick={onOpenFolder} disabled={!detail.folder}><FolderOpen size={16} />{language === "ru" ? "Открыть папку артефактов" : "Open artifacts folder"}</button></section><section className="info-card"><span className="overline">PROCESSING</span><h2>{language === "ru" ? "История обработки" : "Processing history"}</h2>{jobs.length ? jobs.map((job) => <details className="job-history" key={job.id}><summary><div className={`job-state ${job.status}`}><Clock3 size={15} /></div><div><strong>{job.stage}</strong><p>{job.error || `${Math.round(job.progress * 100)}%`}</p></div>{["complete", "attention"].includes(job.status) ? <button className="mini-button danger-hover job-history-delete" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onDeleteJob(job); }} aria-label={language === "ru" ? "Удалить запись истории" : "Remove history entry"} title={language === "ru" ? "Удалить запись истории" : "Remove history entry"}><X size={14} /></button> : null}</summary>{job.log.length ? <div className="job-log"><button className="text-button" onClick={() => { void navigator.clipboard.writeText(job.log.join("\n")); }}><FileText size={13} />{language === "ru" ? "Копировать лог" : "Copy log"}</button><pre>{job.log.join("\n")}</pre></div> : null}</details>) : <p className="muted">{language === "ru" ? "Задач пока нет." : "No jobs yet."}</p>}</section></div>;
 }
 
 function EmptyState({ onAdd, title, body }: { onAdd: () => void; title: string; body: string }) {
@@ -480,7 +481,71 @@ function OfflineState({ message, onRetry, language }: { message: string; onRetry
 }
 
 function AddDialog({ links, setLinks, onClose, onAdd, language }: { links: string; setLinks: (value: string) => void; onClose: () => void; onAdd: () => void; language: "ru" | "en" }) {
-  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-dialog-title"><div className="modal-heading"><div><span className="overline">YOUTUBE</span><h2 id="add-dialog-title">{language === "ru" ? "Добавить в библиотеку" : "Add to library"}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close" tooltip="Закрыть окно. Несохранённые ссылки будут потеряны."><X size={18} /></button></div><p>{language === "ru" ? "Вставьте одну или несколько ссылок — по одной на строку." : "Paste one or more links, one per line."}</p><textarea id="youtube-links" name="youtube-links" value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={7} aria-label={language === "ru" ? "Ссылки YouTube" : "YouTube links"} /><div className="modal-note"><Clock3 size={16} /><span>{language === "ru" ? "Видео обрабатываются по одному с паузами 30–90 секунд." : "Videos are processed one at a time with 30–90 second pauses."}</span></div><div className="modal-actions"><button className="ghost-button" onClick={onClose}>{language === "ru" ? "Отмена" : "Cancel"}</button><button className="primary-button" onClick={onAdd} disabled={!links.trim()}><Plus size={17} />{language === "ru" ? "Добавить в очередь" : "Add to queue"}</button></div></section></div>;
+  const [clipboardMessage, setClipboardMessage] = useState("");
+  const linksRef = useRef(links);
+
+  useEffect(() => {
+    linksRef.current = links;
+  }, [links]);
+
+  useEffect(() => {
+    let active = true;
+    async function prefillFromClipboard() {
+      if (!navigator.clipboard?.readText) {
+        setClipboardMessage(language === "ru" ? "Не удалось прочитать буфер обмена. Вставьте ссылку вручную." : "Could not read the clipboard. Paste the link manually.");
+        return;
+      }
+      try {
+        const result = clipboardPrefillResult(linksRef.current, await navigator.clipboard.readText());
+        if (!active || result.kind === "ignored") return;
+        if (result.kind === "prefilled") {
+          setLinks(result.value);
+          setClipboardMessage(language === "ru" ? "Ссылка YouTube добавлена из буфера обмена." : "YouTube link added from the clipboard.");
+        }
+      } catch (failure) {
+        const result = clipboardPrefillResult(links, "", failure);
+        if (!active) return;
+        setClipboardMessage(result.kind === "permission-denied"
+          ? (language === "ru" ? "Нет доступа к буферу обмена. Вставьте ссылку вручную." : "Clipboard access was denied. Paste the link manually.")
+          : (language === "ru" ? "Не удалось прочитать буфер обмена. Вставьте ссылку вручную." : "Could not read the clipboard. Paste the link manually."));
+      }
+    }
+    void prefillFromClipboard();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const linksField = document.getElementById("youtube-links") as HTMLTextAreaElement | null;
+    linksField?.focus();
+
+    function keepFocusInDialog(event: KeyboardEvent) {
+      const dialog = document.querySelector<HTMLElement>("[role=dialog][aria-modal=true]");
+      if (!dialog) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = dialog.querySelectorAll<HTMLElement>("button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [href]");
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", keepFocusInDialog);
+    return () => document.removeEventListener("keydown", keepFocusInDialog);
+  }, [onClose]);
+
+  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="add-dialog-title"><div className="modal-heading"><div><span className="overline">YOUTUBE</span><h2 id="add-dialog-title">{language === "ru" ? "Добавить в библиотеку" : "Add to library"}</h2></div><IconButton className="icon-button" onClick={onClose} aria-label="Close" tooltip="Закрыть окно. Несохранённые ссылки будут потеряны."><X size={18} /></IconButton></div><p>{language === "ru" ? "Вставьте одну или несколько ссылок — по одной на строку." : "Paste one or more links, one per line."}</p><textarea id="youtube-links" name="youtube-links" value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={7} aria-label={language === "ru" ? "Ссылки YouTube" : "YouTube links"} />{clipboardMessage ? <p className="clipboard-status" role="status">{clipboardMessage}</p> : null}<div className="modal-note"><Clock3 size={16} /><span>{language === "ru" ? "Видео обрабатываются по одному с паузами 30–90 секунд." : "Videos are processed one at a time with 30–90 second pauses."}</span></div><div className="modal-actions"><button className="ghost-button" onClick={onClose}>{language === "ru" ? "Отмена" : "Cancel"}</button><button className="primary-button" onClick={onAdd} disabled={!links.trim()}><Plus size={17} />{language === "ru" ? "Добавить в очередь" : "Add to queue"}</button></div></section></div>;
 }
 
 function QueuePanel({ jobs, paused, close, refresh, language }: { jobs: Job[]; paused: boolean; close: () => void; refresh: () => Promise<void>; language: "ru" | "en" }) {

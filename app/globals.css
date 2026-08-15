@@ -178,6 +178,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modal > p { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .modal textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 12px; padding: 13px; background: #faf9f5; color: var(--ink); outline: 0; font: 12px/1.6 ui-monospace, SFMono-Regular, monospace; }
 .modal textarea:focus { border-color: #92ae9f; box-shadow: 0 0 0 3px rgba(53,102,80,.09); }
+.clipboard-status { margin: 10px 0 0; color: #2f6d55; font-size: 11px; line-height: 1.45; }
 .modal-note { display: flex; gap: 8px; align-items: center; margin-top: 11px; color: #86611e; background: var(--amber-soft); border-radius: 9px; padding: 9px 11px; font-size: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
 
