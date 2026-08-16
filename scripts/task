@@ -1,0 +1,10 @@
+#!/bin/bash
+
+export COPILOT_PROVIDER_TYPE=openai
+export COPILOT_PROVIDER_BASE_URL=http://localhost:11434
+export COPILOT_MODEL=qwen-task-compiler
+export COPILOT_OFFLINE=true
+
+copilot \
+  --agent task-compiler \
+  --prompt "$*"

@@ -1,0 +1,10 @@
+#!/bin/bash
+set -euo pipefail
+export COPILOT_MODEL="${COPILOT_MODEL:-mai-code-1.1-flash}"
+
+prompt_file="${1:-/dev/stdin}"
+
+copilot \
+    --prompt "$(cat "$prompt_file")" \
+    --allow-all \
+    --model "$COPILOT_MODEL"
