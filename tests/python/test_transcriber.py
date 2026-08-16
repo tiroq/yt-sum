@@ -1,6 +1,7 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import httpx
 import pytest
@@ -229,6 +230,46 @@ async def test_transcribe_raises_when_native_job_is_still_running(tmp_path, monk
 
     with pytest.raises(TranscriptionBridgeError, match="still running; retry the job shortly"):
         await bridge.transcribe(audio_path)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_copies_audio_to_space_safe_path_before_upload(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / ".rpc-token"
+    token_file.write_text("secret-token", encoding="utf-8")
+    audio_dir = tmp_path / "library with space"
+    audio_dir.mkdir()
+    audio_path = audio_dir / "audio-16k-mono.wav"
+    audio_path.write_bytes(b"audio-data")
+
+    class FakeResponse:
+        status_code = 200
+        text = "ok"
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"transcript": "[00:00] Speaker: hello"}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            assert " " not in json["path"], json["path"]
+            assert json["path"].endswith("audio-16k-mono.wav")
+            assert json["path"] != str(audio_path.resolve())
+            assert Path(json["path"]).exists()
+            return FakeResponse()
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient())
+    bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
+
+    segments = await bridge.transcribe(audio_path)
+
+    assert [segment.text for segment in segments] == ["hello"]
+    assert " " in str(audio_path)
 
 
 @pytest.mark.asyncio

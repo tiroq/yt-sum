@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -93,6 +95,28 @@ class MeetingTranscriberBridge:
         except (OSError, httpx.HTTPError, ValueError):
             return {"ready": False, "address": address, "state": "unavailable", "reason": "unreachable"}
 
+    def _upload_path(self, audio_path: Path) -> Path:
+        resolved = audio_path.resolve()
+        if not resolved.exists():
+            return resolved
+        if not any(ch.isspace() for ch in str(resolved)) and not any(ch in str(resolved) for ch in "'\"`$&;|()[]{}<>\\"):
+            return resolved
+
+        safe_name = re.sub(r"\s+", "_", resolved.name)
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", safe_name)
+        if not safe_name or safe_name in {".", ".."}:
+            safe_name = "audio.wav"
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="yt-sum-asr-"))
+        safe_path = temp_dir / safe_name
+        shutil.copy2(resolved, safe_path)
+        logger.warning(
+            "[transcribe] copied audio to a no-space temp path before upload: original=%s safe=%s",
+            resolved,
+            safe_path,
+        )
+        return safe_path
+
     async def transcribe(self, audio_path: Path, max_wait_seconds: int = 1800) -> list[TranscriptSegment]:
         diagnostics = self._diagnostics(audio_path)
         logger.info("[transcribe] local audio diagnostics=%s", diagnostics)
@@ -104,8 +128,9 @@ class MeetingTranscriberBridge:
             logger.error("[transcribe] audio file is not readable by this process: %s", audio_path)
 
         token = self._token()
+        upload_path = self._upload_path(audio_path)
         url = f"{self.settings.meeting_transcriber_url.rstrip('/')}/v1/transcribe?include=transcript"
-        request_payload = {"path": str(audio_path.resolve()), "maxWaitSeconds": max_wait_seconds}
+        request_payload = {"path": str(upload_path), "maxWaitSeconds": max_wait_seconds}
         headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": f"yt-sum-{audio_path.parent.name}-{audio_path.name}"}
         logger.info(
             "[transcribe] POST endpoint=%s idempotency_key=%s request_payload=%s local_diagnostics=%s",
