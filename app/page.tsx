@@ -447,7 +447,6 @@ export default function Home() {
   async function resummarize() {
     if (!detail) return;
     await request(`/videos/${detail.meta.video_id}/summaries`, { method: "POST", body: "{}" });
-    setQueueOpen(true);
     await refresh();
   }
 
@@ -455,7 +454,6 @@ export default function Home() {
     if (!detail) return;
     try {
       await request(`/videos/${detail.meta.video_id}/prompts`, { method: "POST", body: JSON.stringify({ template_id: templateId }) });
-      setQueueOpen(true);
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -475,7 +473,6 @@ export default function Home() {
     if (!detail) return;
     try {
       await request(`/videos/${detail.meta.video_id}/speech`, { method: "POST", body: JSON.stringify({ artifact }) });
-      setQueueOpen(true);
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
