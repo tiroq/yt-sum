@@ -20,6 +20,21 @@ test:
     npm test
     .venv/bin/python -m pytest
 
+# Run strict coverage gates. These are intentionally allowed to fail until the
+# Copilot coverage agent has closed every gap.
+coverage:
+    just coverage-js
+    just coverage-python
+
+# Require 100% line, branch, and function coverage for JavaScript files reached by tests.
+coverage-js:
+    node scripts/js-coverage-gate.mjs
+
+# Require 100% branch-aware coverage for the Python backend package.
+coverage-python:
+    .venv/bin/python -m coverage run -m pytest
+    .venv/bin/python -m coverage report
+
 # Build the production web artifact locally. Nothing is deployed.
 build:
     npm run build
