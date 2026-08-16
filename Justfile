@@ -32,8 +32,9 @@ coverage-js:
 
 # Require 100% branch-aware coverage for the Python backend package.
 coverage-python:
-    .venv/bin/python -m coverage run -m pytest
-    .venv/bin/python -m coverage report
+    @mkdir -p .runtime
+    COVERAGE_FILE=.runtime/.coverage .venv/bin/python -m coverage run -m pytest
+    COVERAGE_FILE=.runtime/.coverage .venv/bin/python -m coverage report
 
 # Build the production web artifact locally. Nothing is deployed.
 build:
