@@ -40,6 +40,7 @@ import { formatDuration } from "./duration";
 import { clipboardPrefillResult } from "./clipboard-prefill";
 import { shouldApplySettingsRefresh } from "./settings-refresh";
 import { parseTranscriptMarkdown, transcriptText } from "./transcript";
+import { SUPPORTED_UI_LANGUAGES, createUiDictionary, isSupportedUiLanguage } from "./i18n.js";
 
 const API = process.env.NEXT_PUBLIC_YTSUM_API_URL ?? "http://127.0.0.1:8765/api";
 
@@ -66,10 +67,12 @@ type Provider = {
 
 type Template = { id: string; name_ru: string; name_en: string; prompt: string; builtin: boolean };
 
+type UiLanguage = "ru" | "en" | (string & {});
+
 type Settings = {
   schema_version: number;
   library_dir: string;
-  interface_language: "ru" | "en";
+  interface_language: UiLanguage;
   primary_language: string;
   secondary_language: string;
   summary_language: string;
@@ -145,61 +148,6 @@ type StageTask = { id: string; workflow_id: string; video_id: string; stage: str
 type Health = { status: string; queue_paused: boolean; library: string; cursor?: number; queues?: Record<string, QueueHealth>; pipeline?: PipelineNode[]; stage_tasks?: StageTask[]; resources?: ResourceHealth[]; components: Record<string, { ready: boolean; version?: string; engine?: string; address?: string; state?: string; reason?: string }> };
 type SourceUpdate = { available: boolean; clean: boolean | null; branch: string | null; upstream: string | null; ahead: number; behind: number; can_pull: boolean; diagnostic: string; updated?: boolean; restart_required?: boolean };
 
-const copy = {
-  ru: {
-    library: "Библиотека",
-    all: "Все видео",
-    favorites: "Избранное",
-    attention: "Требуют внимания",
-    archived: "Архив",
-    archive: "Архивировать",
-    restore: "Восстановить",
-    add: "Добавить видео",
-    search: "Поиск по библиотеке",
-    sort: "Сортировка",
-    grouping: "Группировка",
-    alphabetical: "По названию: А–Я",
-    alphabeticalReverse: "По названию: Я–А",
-    uncategorized: "Без категории",
-    summary: "Summary",
-    prompts: "Промпты",
-    transcript: "Транскрипция",
-    details: "Метаданные",
-    settings: "Настройки",
-    status: "Состояние системы",
-    queue: "Очередь",
-    emptyTitle: "Добавьте первое видео",
-    emptyBody: "Вставьте ссылку YouTube — YT Sum бережно получит транскрипцию и создаст локальный конспект.",
-    offline: "Локальный API не запущен",
-  },
-  en: {
-    library: "Library",
-    all: "All videos",
-    favorites: "Favorites",
-    attention: "Needs attention",
-    archived: "Archive",
-    archive: "Archive",
-    restore: "Restore",
-    add: "Add video",
-    search: "Search library",
-    sort: "Sort",
-    grouping: "Group",
-    alphabetical: "Title: A–Z",
-    alphabeticalReverse: "Title: Z–A",
-    uncategorized: "Uncategorized",
-    summary: "Summary",
-    prompts: "Prompts",
-    transcript: "Transcript",
-    details: "Metadata",
-    settings: "Settings",
-    status: "System status",
-    queue: "Queue",
-    emptyTitle: "Add your first video",
-    emptyBody: "Paste a YouTube link — YT Sum will carefully collect its transcript and create local notes.",
-    offline: "Local API is not running",
-  },
-};
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, { ...init, cache: init?.cache ?? "no-store", headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
   if (!response.ok) {
@@ -258,8 +206,8 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(true);
 
-  const language = settings?.interface_language ?? "ru";
-  const t = copy[language];
+  const language: UiLanguage = isSupportedUiLanguage(settings?.interface_language) ? settings!.interface_language : "ru";
+  const t = createUiDictionary(language);
 
   useEffect(() => {
     setTranscriptFile(detail?.meta.transcript?.file ?? detail?.meta.transcripts?.[0]?.file ?? "");
@@ -578,7 +526,7 @@ export default function Home() {
           <label><span>{t.grouping}</span><select value={grouping} onChange={(event) => setGrouping(event.target.value as "none" | "tag" | "topic")} aria-label={t.grouping}>{GROUPING_OPTIONS.map((option) => <option key={option.id} value={option.id}>{language === "ru" ? option.label : option.labelEn}</option>)}</select></label>
         </div>
         <div className="video-list">
-          {videoGroups.map((group) => <section className="video-group" key={group.id}>{group.label ? <h2>{group.label}<span>{group.videos.length}</span></h2> : null}{group.videos.map((video) => (
+          {videoGroups.map((group) => <section className="video-group" key={group.id}>{group.label ? <h2>{group.label}<span>{group.videos.length}</span></h2> : null}{group.videos.map((video: VideoItem) => (
             <div key={`${group.id}-${video.video_id}`} className={`video-card ${selectedId === video.video_id && view === "library" ? "selected" : ""}`}>
               <button className="video-card-main" onClick={() => { setSelectedId(video.video_id); setView("library"); setSidebarOpen(false); }}>
                 <div className="thumb-wrap"><img src={video.thumbnail_file ? `${API}/videos/${video.video_id}/thumbnail` : `https://i.ytimg.com/vi/${video.video_id}/mqdefault.jpg`} alt="" />{video.duration_seconds !== null ? <span>{formatDuration(video.duration_seconds)}</span> : null}</div>
@@ -889,7 +837,7 @@ function SettingsView({ settings, setSettings, onSaved, language }: { settings: 
 
   return <div className="settings-page"><div className="page-heading"><div><span className="overline">LOCAL-FIRST</span><h1>{language === "ru" ? "Настройки" : "Settings"}</h1><p>{language === "ru" ? "Всё хранится на этом Mac. Секреты — только в Связке ключей." : "Everything stays on this Mac. Secrets are stored only in Keychain."}</p></div><button className="primary-button" onClick={save} disabled={saving}>{saving ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}{language === "ru" ? "Сохранить" : "Save"}</button></div>
     <div className="settings-layout">
-      <section className="settings-card"><div className="settings-card-title"><FolderOpen size={19} /><div><h2>{language === "ru" ? "Библиотека и языки" : "Library and languages"}</h2><p>Markdown + JSON</p></div></div><label className="field full"><span>{language === "ru" ? "Папка библиотеки" : "Library folder"}</span><input id="library-dir" name="library-dir" value={settings.library_dir} onChange={(e) => update("library_dir", e.target.value)} /></label><div className="field-grid"><label className="field"><span>{language === "ru" ? "Основной текст" : "Primary transcript"}</span><input value={settings.primary_language} onChange={(e) => update("primary_language", e.target.value)} /></label><label className="field"><span>{language === "ru" ? "Запасной текст" : "Fallback transcript"}</span><input value={settings.secondary_language} onChange={(e) => update("secondary_language", e.target.value)} /></label><label className="field"><span>{language === "ru" ? "Язык summary" : "Summary language"}</span><input value={settings.summary_language} onChange={(e) => update("summary_language", e.target.value)} /></label><label className="field"><span>{language === "ru" ? "Интерфейс" : "Interface"}</span><select value={settings.interface_language} onChange={(e) => update("interface_language", e.target.value as "ru" | "en")}><option value="ru">Русский</option><option value="en">English</option></select></label></div></section>
+<section className="settings-card"><div className="settings-card-title"><FolderOpen size={19} /><div><h2>{language === "ru" ? "Библиотека и языки" : "Library and languages"}</h2><p>Markdown + JSON</p></div></div><label className="field full"><span>{language === "ru" ? "Папка библиотеки" : "Library folder"}</span><input id="library-dir" name="library-dir" value={settings.library_dir} onChange={(e) => update("library_dir", e.target.value)} /></label><div className="field-grid"><label className="field"><span>{language === "ru" ? "Основной текст" : "Primary transcript"}</span><input value={settings.primary_language} onChange={(e) => update("primary_language", e.target.value)} /></label><label className="field"><span>{language === "ru" ? "Запасной текст" : "Fallback transcript"}</span><input value={settings.secondary_language} onChange={(e) => update("secondary_language", e.target.value)} /></label><label className="field"><span>{language === "ru" ? "Язык summary" : "Summary language"}</span><input value={settings.summary_language} onChange={(e) => update("summary_language", e.target.value)} /></label><label className="field"><span>{language === "ru" ? "Интерфейс" : "Interface"}</span><select value={settings.interface_language} onChange={(e) => update("interface_language", e.target.value as UiLanguage)}>{SUPPORTED_UI_LANGUAGES.map((code) => <option key={code} value={code}>{code.toUpperCase()}</option>)}</select></label></div></section>
 
       <section className="settings-card"><div className="settings-card-title"><Clock3 size={19} /><div><h2>{language === "ru" ? "Бережная загрузка" : "Respectful downloading"}</h2><p>yt-dlp</p></div></div><div className="field-grid"><label className="field"><span>{language === "ru" ? "Минимальная пауза, сек" : "Minimum delay, sec"}</span><input id="min-delay" name="min-delay" type="number" value={settings.min_download_delay_seconds} onChange={(e) => update("min_download_delay_seconds", Number(e.target.value))} /></label><label className="field"><span>{language === "ru" ? "Максимальная пауза, сек" : "Maximum delay, sec"}</span><input id="max-delay" name="max-delay" type="number" value={settings.max_download_delay_seconds} onChange={(e) => update("max_download_delay_seconds", Number(e.target.value))} /></label></div><label className="field full"><span>cookies.txt</span><input id="cookie-file" name="cookie-file" value={settings.cookie_file} onChange={(e) => update("cookie_file", e.target.value)} placeholder="~/Downloads/cookies.txt" /></label><label className="field full"><span>{language === "ru" ? "Cookies браузера" : "Browser cookies"}</span><select value={settings.cookie_browser} onChange={(e) => update("cookie_browser", e.target.value)}><option value="">{language === "ru" ? "Не использовать" : "Disabled"}</option><option value="chrome">Chrome</option><option value="safari">Safari</option><option value="firefox">Firefox</option></select></label></section>
 
