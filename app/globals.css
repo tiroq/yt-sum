@@ -162,9 +162,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .info-card { padding: 26px; }
 .prompt-panel-grid { grid-template-columns: minmax(260px, .82fr) minmax(0, 1.42fr); }
 .prompt-panel-card { padding: 22px; }
-.artifact-panel-card { min-width: 0; }
+.artifact-panel-card { min-width: 0; width: 100%; }
 .artifact-panel-card .markdown { max-width: none; }
-.artifact-panel-card .nav-stack { display: grid; gap: 10px; }
+.artifact-panel-card .nav-stack { display: grid; gap: 10px; width: 100%; }
 .artifact-panel-card .nav-item { width: 100%; justify-content: flex-start; }
 .artifact-panel-card .nav-item.active { color: var(--ink); background: rgba(22, 62, 50, 0.06); }
 .artifact-panel-card .nav-item.active > span:last-child, .artifact-panel-card .nav-item.active small { color: var(--muted); }
