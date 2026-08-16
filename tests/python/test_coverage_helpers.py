@@ -91,6 +91,8 @@ def test_git_update_status_and_pull_paths(monkeypatch) -> None:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
         if cmd[:4] == ["rev-list", "--left-right", "--count"]:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="0\t0\n", stderr="")
+        if cmd[:3] == ["rev-list", "--left-right", "--count"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="0\t0\n", stderr="")
         raise AssertionError(cmd)
 
     monkeypatch.setattr(git_update, "_git", fake_git)
@@ -110,14 +112,15 @@ def test_git_update_status_and_pull_paths(monkeypatch) -> None:
     assert dirty["diagnostic"] == "Local changes detected. Source updates are blocked until the working tree is clean."
 
     def fake_pull(*args, **kwargs):
-        if args[:2] == ("status", "--porcelain=v1"):
-            return subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr="")
-        if args[:2] == ("rev-parse", "--abbrev-ref"):
-            return subprocess.CompletedProcess(["git", *args], 0, stdout="origin/main\n", stderr="")
-        if args[:2] == ("rev-list", "--left-right"):
-            return subprocess.CompletedProcess(["git", *args], 0, stdout="1\t0\n", stderr="")
-        if args[0] == "pull":
-            return subprocess.CompletedProcess(["git", *args], 0, stdout="fast-forward\n", stderr="")
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain=v1"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
+        if cmd[:3] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["rev-list", "--left-right", "--count"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="1\t0\n", stderr="")
+        if cmd[0] == "pull":
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="fast-forward\n", stderr="")
         return fake_git(*args, **kwargs)
 
     monkeypatch.setattr(git_update, "_git", fake_pull)
@@ -177,14 +180,17 @@ def test_downloader_helpers_and_fallback_paths(monkeypatch, tmp_path: Path) -> N
 
         def extract_info(self, url, download=False):
             if "playlist" in url:
-                return {"title": "Playlist", "entries": [{"id": "a"}, {"id": "a"}, {"id": "b"}], "channel": "demo"}
+                return {"title": "Playlist", "entries": [{"id": "AAAAAAAAAAA"}, {"id": "AAAAAAAAAAA"}, {"id": "BBBBBBBBBBB"}], "channel": "demo"}
             return {"id": "Gn64NNr3bqU", "webpage_url": url, "title": "Example", "channel": "demo", "upload_date": "20260501", "duration": 120, "thumbnail": "https://example.com/thumb.jpg", "subtitles": {"en": {"default": {"ext": "vtt"}}}, "automatic_captions": {}}
+
+        def download(self, urls):
+            (tmp_path / "subtitle.vtt").write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n", encoding="utf-8")
 
     monkeypatch.setattr("ytsum.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL)
     client = YouTubeClient(AppSettings())
     playlist = client.extract_playlist("https://youtube.com/playlist?list=PL12345")
     assert playlist.meta.id == "PL12345"
-    assert [entry.video_id for entry in playlist.entries] == ["a", "b"]
+    assert [entry.video_id for entry in playlist.entries] == ["AAAAAAAAAAA", "BBBBBBBBBBB"]
     video = client.extract("https://www.youtube.com/watch?v=Gn64NNr3bqU")
     assert video.video_id == "Gn64NNr3bqU"
     assert client.choose_transcript(video).language == "en"
@@ -264,11 +270,13 @@ def test_transcriber_health_and_parse_branches(monkeypatch) -> None:
             return FakeResponse(200, {"transcript": "[00:00] Speaker: hello"})
 
     monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", FakeAsyncClient)
+    audio_path = Path("/tmp/audio.wav")
+    audio_path.write_bytes(b"fake-audio")
     bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file="/tmp/token.txt"))
     Path("/tmp/token.txt").write_text("abc", encoding="utf-8")
     status = asyncio.run(bridge.health())
     assert status["ready"] is True
-    segments = asyncio.run(bridge.transcribe(Path("/tmp/audio.wav")))
+    segments = asyncio.run(bridge.transcribe(audio_path))
     assert segments[0].text == "hello"
 
     class MissingTokenClient(FakeAsyncClient):
