@@ -446,8 +446,16 @@ export default function Home() {
 
   async function resummarize() {
     if (!detail) return;
-    await request(`/videos/${detail.meta.video_id}/summaries`, { method: "POST", body: "{}" });
-    await refresh();
+    if (!detail.meta.transcript) {
+      setError(language === "ru" ? "Текст видео ещё не готов. Дождитесь завершения транскрипции." : "Transcript is not ready yet. Please wait for transcription to complete.");
+      return;
+    }
+    try {
+      await request(`/videos/${detail.meta.video_id}/summaries`, { method: "POST", body: "{}" });
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   async function runPrompt(templateId: string) {
