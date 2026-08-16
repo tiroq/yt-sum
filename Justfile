@@ -56,6 +56,10 @@ api-stop:
 api-restart:
     @curl -fsS -X POST http://127.0.0.1:8765/api/system/restart
 
+# Check API and backend state, query and show status.
+status:
+    @curl -fsS http://127.0.0.1:8765/api/health | jq '.' || echo "API is not running. Start with: just start"
+
 # Restart the local web application and API.
 restart: stop start
 
