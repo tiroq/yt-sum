@@ -17,6 +17,15 @@ def test_parse_meeting_transcriber_output() -> None:
     assert segments[1].text == "Answer"
 
 
+def test_parse_single_segment_sets_final_end_offset_without_speaker() -> None:
+    segments = parse_native_transcript("[01:02] Hello")
+
+    assert len(segments) == 1
+    assert segments[0].start == 62
+    assert segments[0].speaker is None
+    assert segments[0].end == 67
+
+
 @pytest.mark.asyncio
 async def test_health_explains_when_automation_token_is_missing(tmp_path) -> None:
     bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(tmp_path / ".rpc-token")))
@@ -24,6 +33,54 @@ async def test_health_explains_when_automation_token_is_missing(tmp_path) -> Non
     status = await bridge.health()
 
     assert status == {"ready": False, "address": "http://127.0.0.1:9876", "state": "unavailable", "reason": "token_missing"}
+
+
+@pytest.mark.asyncio
+async def test_health_reports_unauthorized_and_unreachable_states(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / ".rpc-token"
+    token_file.write_text("secret-token", encoding="utf-8")
+    bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
+
+    class UnauthorizedResponse:
+        status_code = 401
+
+    class FailingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return UnauthorizedResponse()
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FailingClient())
+    assert await bridge.health() == {"ready": False, "address": "http://127.0.0.1:9876", "state": "unavailable", "reason": "unauthorized"}
+
+    async def boom(*args, **kwargs):
+        raise httpx.ConnectError("down")
+
+    class BrokenClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            raise httpx.ConnectError("down")
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: BrokenClient())
+    assert await bridge.health() == {"ready": False, "address": "http://127.0.0.1:9876", "state": "unavailable", "reason": "unreachable"}
+
+
+def test_token_rejects_empty_file(tmp_path) -> None:
+    token_file = tmp_path / ".rpc-token"
+    token_file.write_text(" \n\t", encoding="utf-8")
+    bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
+
+    with pytest.raises(TranscriptionBridgeError, match="token file is empty"):
+        bridge._token()
 
 
 @pytest.mark.asyncio
@@ -59,6 +116,113 @@ async def test_transcribe_includes_audio_file_diagnostics_in_error(tmp_path, mon
     bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
 
     with pytest.raises(TranscriptionBridgeError, match=r"audio_path=.*exists=True.*is_file=True.*size_bytes=10.*resolved=.*parent_exists=True.*parent_is_dir=True"):
+        await bridge.transcribe(audio_path)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_handles_http_error_and_missing_files(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / ".rpc-token"
+    token_file.write_text("secret-token", encoding="utf-8")
+
+    class FakeResponse:
+        status_code = 500
+        text = "server exploded"
+        headers = {"content-type": "text/plain"}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            return FakeResponse()
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient())
+    bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
+
+    with pytest.raises(TranscriptionBridgeError, match="Meeting Transcriber returned HTTP 500"):
+        await bridge.transcribe(tmp_path / "missing.wav")
+
+    directory_path = tmp_path / "not-a-file"
+    directory_path.mkdir()
+    with pytest.raises(TranscriptionBridgeError, match="Meeting Transcriber returned HTTP 500"):
+        await bridge.transcribe(directory_path)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_uses_fallback_transcript_path_and_rejects_empty_or_incomplete_results(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / ".rpc-token"
+    token_file.write_text("secret-token", encoding="utf-8")
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"audio-data")
+    transcript_path = tmp_path / "transcript.txt"
+    transcript_path.write_text("[00:00] Guest: hello\n[00:10] Guest: there\n", encoding="utf-8")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self.text = "ok"
+            self.headers = {"content-type": "application/json"}
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            return FakeResponse(self.payload)
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient({"state": "done", "transcriptPath": str(transcript_path)}))
+    bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
+    segments = await bridge.transcribe(audio_path)
+    assert [segment.text for segment in segments] == ["hello", "there"]
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient({"state": "done"}))
+    with pytest.raises(TranscriptionBridgeError, match="completed without transcript text"):
+        await bridge.transcribe(audio_path)
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient({"state": "done", "transcript": "no timestamps here"}))
+    with pytest.raises(TranscriptionBridgeError, match="did not contain timestamped segments"):
+        await bridge.transcribe(audio_path)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_raises_when_native_job_is_still_running(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / ".rpc-token"
+    token_file.write_text("secret-token", encoding="utf-8")
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"audio-data")
+
+    class FakeResponse:
+        status_code = 202
+        text = "transcription still queued"
+        headers = {"content-type": "application/json"}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            return FakeResponse()
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient())
+    bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
+
+    with pytest.raises(TranscriptionBridgeError, match="still running; retry the job shortly"):
         await bridge.transcribe(audio_path)
 
 
