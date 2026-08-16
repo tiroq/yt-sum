@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,8 @@ from typing import AsyncIterator
 
 from .models import JobRecord, ResourceSnapshot
 from .storage import LibraryStorage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +36,19 @@ class ResourceCoordinator:
             "asr": _Resource("asr", "Meeting Transcriber", 1),
             "tts": _Resource("tts", "Text to speech", 1),
         }
+
+    def _debug_snapshot(self, event: str, resource: _Resource, **details: object) -> None:
+        payload = {
+            "event": event,
+            "resource_id": resource.id,
+            "label": resource.label,
+            "capacity": resource.capacity,
+            "waiting": resource.waiting,
+            "in_use": len(resource.owners),
+            "owners": list(resource.owners.values()),
+            **details,
+        }
+        logger.debug("[resources] %s", payload)
 
     @property
     def storage(self) -> LibraryStorage:
@@ -66,6 +82,9 @@ class ResourceCoordinator:
             required=required,
         )
         resource.waiting += 1
+        self._debug_snapshot("waiting", resource, job_id=job.id, workflow_id=job.workflow_id, video_id=job.video_id, stage=stage, message=message)
+        if resource.waiting > resource.capacity:
+            logger.warning("[resources] queue depth exceeds capacity: resource=%s waiting=%s capacity=%s job_id=%s stage=%s", resource.id, resource.waiting, resource.capacity, job.id, stage)
         acquired = False
         attempt_id: str | None = None
         lease_id: str | None = None
@@ -73,6 +92,16 @@ class ResourceCoordinator:
         attempt_state = "failed"
         attempt_error: str | None = None
         try:
+            logger.info(
+                "[resources] waiting for lock: resource=%s job_id=%s workflow_id=%s video_id=%s stage=%s waiting=%s capacity=%s",
+                resource.id,
+                job.id,
+                job.workflow_id,
+                job.video_id,
+                stage,
+                resource.waiting,
+                resource.capacity,
+            )
             await resource.semaphore.acquire()
             acquired = True
             resource.waiting = max(0, resource.waiting - 1)
@@ -82,6 +111,17 @@ class ResourceCoordinator:
                 "video_id": job.video_id,
                 "stage": stage,
             }
+            logger.info(
+                "[resources] acquired lock: resource=%s job_id=%s workflow_id=%s video_id=%s stage=%s in_use=%s waiting=%s",
+                resource.id,
+                job.id,
+                job.workflow_id,
+                job.video_id,
+                stage,
+                len(resource.owners),
+                resource.waiting,
+            )
+            self._debug_snapshot("acquired", resource, job_id=job.id, workflow_id=job.workflow_id, video_id=job.video_id, stage=stage, message=message)
             self.storage.transition_stage(
                 job.id,
                 stage,
@@ -151,9 +191,11 @@ class ResourceCoordinator:
                 self.storage.finish_attempt(attempt_id, lease_id, attempt_state, attempt_error)
             if not acquired:
                 resource.waiting = max(0, resource.waiting - 1)
+                self._debug_snapshot("wait_aborted", resource, job_id=job.id, workflow_id=job.workflow_id, video_id=job.video_id, stage=stage, message=message)
             if acquired:
                 resource.owners.pop(job.id, None)
                 resource.semaphore.release()
+                self._debug_snapshot("released", resource, job_id=job.id, workflow_id=job.workflow_id, video_id=job.video_id, stage=stage, message=message)
 
     @staticmethod
     def _lease_expiry() -> str:
@@ -169,6 +211,7 @@ class ResourceCoordinator:
         """Serialize non-workflow operations such as playlist inventory."""
         resource = self._resources[resource_id]
         resource.waiting += 1
+        self._debug_snapshot("external_waiting", resource, owner_id=owner_id, label=label)
         acquired = False
         try:
             await resource.semaphore.acquire()
@@ -180,13 +223,16 @@ class ResourceCoordinator:
                 "video_id": "",
                 "stage": label,
             }
+            self._debug_snapshot("external_acquired", resource, owner_id=owner_id, label=label)
             yield
         finally:
             if not acquired:
                 resource.waiting = max(0, resource.waiting - 1)
+                self._debug_snapshot("external_wait_aborted", resource, owner_id=owner_id, label=label)
             if acquired:
                 resource.owners.pop(owner_id, None)
                 resource.semaphore.release()
+                self._debug_snapshot("external_released", resource, owner_id=owner_id, label=label)
 
     def snapshots(self) -> list[ResourceSnapshot]:
         return [
