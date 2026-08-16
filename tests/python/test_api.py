@@ -1,9 +1,19 @@
+import tomllib
 from pathlib import Path
 import signal
 import shutil
 import subprocess
 
 from fastapi.testclient import TestClient
+
+
+def test_cluster_dependencies_are_in_default_install() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    project = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+    dependency_names = {dep.split(";", 1)[0].split("[", 1)[0].split("==", 1)[0].split(">=", 1)[0].split("<=", 1)[0].strip() for dep in project["project"]["dependencies"]}
+    assert "numpy" in dependency_names
+    assert "scikit-learn" in dependency_names
+    assert "sentence-transformers" in dependency_names
 
 
 def test_local_api_adds_valid_urls_without_network(monkeypatch, tmp_path: Path) -> None:
