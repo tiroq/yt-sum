@@ -1,10 +1,23 @@
 import asyncio
+import tomllib
+from pathlib import Path
 
 import pytest
 
 from ytsum.models import AppSettings, ProviderSettings, SummaryTemplate
 from ytsum.providers import AsyncRateLimiter, ProviderClient, ProviderError
 from ytsum.summarizer import Summarizer, split_text, strip_frontmatter
+
+
+def test_cluster_dependencies_are_optional() -> None:
+    project_file = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    config = tomllib.loads(project_file.read_text())
+    dependencies = config["project"]["dependencies"]
+    optional = config["project"]["optional-dependencies"]
+
+    assert not any(dep.startswith("sentence-transformers") for dep in dependencies)
+    assert not any(dep.startswith("scikit-learn") for dep in dependencies)
+    assert any("sentence-transformers" in dep for dep in optional.get("cluster", []))
 
 
 def test_split_text_covers_source_and_respects_size() -> None:

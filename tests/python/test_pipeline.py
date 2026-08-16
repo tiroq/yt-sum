@@ -45,6 +45,29 @@ async def test_yt_dlp_resource_is_globally_serialized_and_wait_is_truthful(tmp_p
     assert storage.list_attempts(second.workflow_id)[0]["state"] == "succeeded"
 
 
+async def test_resource_coordinator_emits_wait_and_release_debug_events() -> None:
+    storage = LibraryStorage(Path("/tmp/yt-sum-resource-debug"))
+    job = storage.enqueue("wait-debug-video", "https://youtu.be/wait-debug-video")
+    resources = ResourceCoordinator(lambda: storage)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder() -> None:
+        async with resources.stage(job, "metadata", "yt_dlp", progress=0.1, message="hold"):
+            entered.set()
+            await release.wait()
+
+    task = asyncio.create_task(holder())
+    await entered.wait()
+    snapshot = next(item for item in resources.snapshots() if item.id == "yt_dlp")
+    assert snapshot.in_use == 1
+    assert snapshot.waiting == 0
+
+    release.set()
+    await task
+    assert storage.get_stage_task(job.workflow_id, "metadata").state == "succeeded"
+
+
 async def test_pause_blocks_the_next_atomic_operation_until_resume() -> None:
     queue = ProcessingQueue(None, lambda: None)  # type: ignore[arg-type]
     queue.pause()
