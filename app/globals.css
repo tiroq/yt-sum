@@ -179,6 +179,31 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .job-log pre { max-height: 240px; overflow: auto; white-space: pre-wrap; padding: 11px; color: #55615a; background: #f5f4ef; border: 1px solid var(--line-soft); border-radius: 9px; font: 9px/1.55 ui-monospace, SFMono-Regular, monospace; }
 .job-history-delete { color: var(--red); }
 
+.stage-journal { margin-top: 20px; border: 1px solid var(--line-soft); border-radius: 16px; background: #fbfaf6; overflow: hidden; }
+.stage-journal summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; cursor: pointer; list-style: none; border-bottom: 1px solid var(--line-soft); }
+.stage-journal summary::-webkit-details-marker { display: none; }
+.stage-journal summary span { font-size: 12px; font-weight: 760; letter-spacing: -.01em; }
+.stage-journal summary b { min-width: 24px; padding: 3px 8px; border-radius: 999px; color: var(--forest); background: #e4efe9; text-align: center; font-size: 10px; }
+.stage-event-list { max-height: 360px; overflow: auto; padding: 8px 0; }
+.stage-event { position: relative; display: grid; grid-template-columns: 24px minmax(0,1fr) auto; gap: 11px; padding: 10px 16px; }
+.stage-event:not(:last-child)::after { content: ""; position: absolute; left: 27px; top: 31px; bottom: -9px; width: 1px; background: #e3e2dc; }
+.stage-event-marker { position: relative; z-index: 1; display: grid; place-items: start center; padding-top: 4px; }
+.stage-event-marker span { width: 9px; height: 9px; border-radius: 50%; background: #b0b8b2; box-shadow: 0 0 0 4px #fbfaf6; }
+.stage-event.started .stage-event-marker span { background: var(--amber); }
+.stage-event.completed .stage-event-marker span { background: var(--forest-2); }
+.stage-event.failed .stage-event-marker span { background: var(--red); }
+.stage-event-main { min-width: 0; }
+.stage-event-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stage-event-top code { padding: 3px 6px; color: #4f5c55; background: #f0efea; border: 1px solid var(--line-soft); border-radius: 7px; font: 10px ui-monospace, SFMono-Regular, monospace; }
+.stage-event-main p { margin: 6px 0 0; color: #38433d; font-size: 11px; line-height: 1.45; }
+.stage-status { padding: 3px 7px; border-radius: 999px; color: #637069; background: #efeee9; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.stage-status.started { color: #8a641c; background: var(--amber-soft); }
+.stage-status.completed { color: #2f6e50; background: #dff0e6; }
+.stage-status.failed { color: var(--red); background: var(--red-soft); }
+.stage-event-meta { display: grid; align-content: start; justify-items: end; gap: 5px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.stage-event-meta time { font: 10px ui-monospace, SFMono-Regular, monospace; }
+.stage-event-meta strong { color: var(--ink); font-size: 11px; }
+
 .empty-state { min-height: calc(100vh - 67px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
 .empty-orbit { width: 93px; height: 93px; position: relative; display: grid; place-items: center; color: var(--forest); background: #e2eee8; border-radius: 31px 31px 31px 10px; box-shadow: inset 0 0 0 1px #d2e3da; }
 .empty-orbit > span { position: absolute; border: 1px solid #c8ddd2; border-radius: 50%; }

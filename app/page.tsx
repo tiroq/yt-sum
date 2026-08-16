@@ -647,11 +647,32 @@ function SpeechPanel({ detail, artifact, onCreate, language }: { detail: VideoDe
   return <section className="info-card narration-card"><div><span className="overline">TEXT TO SPEECH</span><h2>{language === "ru" ? "Озвучивание" : "Narration"}</h2><p className="muted">{audio ? `${audio.voice} · ${audio.rate} wpm` : (language === "ru" ? "Создайте локальный M4A-файл для этого текста." : "Create a local M4A file for this text.")}</p></div>{audio ? <audio controls preload="metadata" src={`${API}/videos/${detail.meta.video_id}/speech/${artifact}`}><track kind="captions" srcLang={language} label={language === "ru" ? "Исходный текст" : "Source text"} /></audio> : null}<button className="secondary-button" onClick={() => onCreate(artifact)} disabled={!sourceReady || active}><Volume2 size={16} />{audio ? (language === "ru" ? "Создать заново" : "Regenerate") : (language === "ru" ? "Озвучить" : "Generate audio")}</button></section>;
 }
 
+function stageStatusLabel(status: JobStageEvent["status"], language: "ru" | "en") {
+  const labels = {
+    ru: { started: "Запущено", progress: "В работе", completed: "Готово", failed: "Ошибка" },
+    en: { started: "Started", progress: "Progress", completed: "Done", failed: "Failed" },
+  };
+  return labels[language][status];
+}
+
+function formatStageEventTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return value;
+}
+
+function StageJournal({ events, language }: { events: JobStageEvent[]; language: "ru" | "en" }) {
+  return <details className="stage-journal" open><summary><span>{language === "ru" ? "Журнал этапов" : "Stage journal"}</span><b>{events.length}</b></summary><div className="stage-event-list">{events.map((event, index) => {
+    const planned = event.requests_planned || "—";
+    return <article className={`stage-event ${event.status}`} key={`${event.at}-${event.stage}-${index}`}><div className="stage-event-marker"><span /></div><div className="stage-event-main"><div className="stage-event-top"><code>{event.stage}</code><span className={`stage-status ${event.status}`}>{stageStatusLabel(event.status, language)}</span></div><p>{event.message}</p></div><div className="stage-event-meta"><time>{formatStageEventTime(event.at)}</time><strong>{event.requests_completed}/{planned}</strong></div></article>;
+  })}</div></details>;
+}
+
 function SummaryProgressCard({ job, language }: { job: Job | undefined; language: "ru" | "en" }) {
   if (!job) return null;
   const requestCount = `${job.requests_completed} / ${job.requests_planned || "—"}`;
   const events = job.stage_log.length ? job.stage_log : job.log.map((message, index) => ({ at: String(index), stage: job.stage, message, status: "progress" as const, requests_planned: job.requests_planned, requests_completed: job.requests_completed }));
-  return <article className="info-card"><span className="overline">SUMMARY ACTIVITY</span><h2>{language === "ru" ? "Ход суммаризации" : "Summarization progress"}</h2><div className="detail-row"><span>{language === "ru" ? "Текущий этап" : "Current stage"}</span><strong>{job.stage}</strong></div><div className="detail-row"><span>{language === "ru" ? "Запросы: выполнено / запланировано" : "Requests: completed / planned"}</span><strong>{requestCount}</strong></div><div className="detail-row"><span>{language === "ru" ? "Источник" : "Source"}</span><strong>{job.summary_source ?? "—"}</strong></div><div className="detail-row"><span>{language === "ru" ? "Провайдер / модель" : "Provider / model"}</span><strong>{[job.provider_name, job.model].filter(Boolean).join(" / ") || "—"}</strong></div>{job.error ? <p className="job-error">{job.error}</p> : null}<details className="job-history"><summary>{language === "ru" ? `Журнал этапов (${events.length})` : `Stage journal (${events.length})`}</summary><div className="job-log"><pre>{events.map((event) => `${event.at} · ${event.stage} · ${event.requests_completed}/${event.requests_planned || "—"} — ${event.message}`).join("\n")}</pre></div></details></article>;
+  return <article className="info-card"><span className="overline">SUMMARY ACTIVITY</span><h2>{language === "ru" ? "Ход суммаризации" : "Summarization progress"}</h2><div className="detail-row"><span>{language === "ru" ? "Текущий этап" : "Current stage"}</span><strong>{job.stage}</strong></div><div className="detail-row"><span>{language === "ru" ? "Запросы: выполнено / запланировано" : "Requests: completed / planned"}</span><strong>{requestCount}</strong></div><div className="detail-row"><span>{language === "ru" ? "Источник" : "Source"}</span><strong>{job.summary_source ?? "—"}</strong></div><div className="detail-row"><span>{language === "ru" ? "Провайдер / модель" : "Provider / model"}</span><strong>{[job.provider_name, job.model].filter(Boolean).join(" / ") || "—"}</strong></div>{job.error ? <p className="job-error">{job.error}</p> : null}<StageJournal events={events} language={language} /></article>;
 }
 
 function TranscriptPanel({ detail, file, setFile, view, setView, language, onReprocess }: { detail: VideoDetail; file: string; setFile: (value: string) => void; view: "continuous" | "structured"; setView: (value: "continuous" | "structured") => void; language: "ru" | "en"; onReprocess: () => void }) {
