@@ -241,9 +241,18 @@ def test_downloader_helpers_and_fallback_paths(monkeypatch, tmp_path: Path) -> N
             (tmp_path / "source.wav").write_bytes(b"audio")
 
     monkeypatch.setattr("ytsum.downloader.yt_dlp.YoutubeDL", AudioYoutubeDL)
-    monkeypatch.setattr("ytsum.downloader.subprocess.run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
+
+    def fake_ffmpeg_run(*args, **kwargs):
+        command = args[0] if args else []
+        output_path = command[-1] if command else None
+        if output_path:
+            Path(output_path).write_bytes(b"converted-audio")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("ytsum.downloader.subprocess.run", fake_ffmpeg_run)
     audio = client.download_audio(video, tmp_path)
     assert audio.name == "audio-16k-mono.wav"
+    assert audio.read_bytes() == b"converted-audio"
 
     class FailingYoutubeDL:
         def __init__(self, options):
