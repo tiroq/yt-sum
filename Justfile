@@ -58,7 +58,7 @@ api-restart:
 
 # Check API and backend state, query and show status.
 status:
-    @curl -fsS http://127.0.0.1:8765/api/health | jq '.' || echo "API is not running. Start with: just start"
+    @curl -fsS http://127.0.0.1:8765/api/health 2>/dev/null | bash ./scripts/status-format.sh || echo "API is not running. Start with: just start"
 
 # Restart the local web application and API.
 restart: stop start
