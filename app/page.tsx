@@ -522,7 +522,7 @@ export default function Home() {
         >
           <div className="brand-mark"><Sparkles size={19} strokeWidth={2.4} /></div>
           <div><div className="brand-name">YT Sum</div><div className="brand-subtitle">local intelligence</div></div>
-          <div className="brand-close-action"><IconButton className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></IconButton></div>
+          <div className="brand-close-action"><IconButton className="icon-button mobile-only" onClick={(event) => { event.stopPropagation(); setSidebarOpen(false); }} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></IconButton></div>
         </div>
 
         <button className="add-button" onClick={openAddDialog}><Plus size={18} />{t.add}</button>

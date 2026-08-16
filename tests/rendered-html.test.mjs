@@ -105,7 +105,19 @@ test("selected prompt artifacts can be dismissed from the exact result view", as
   assert.doesNotMatch(page, /secondary-button.*onClick=\{\(\) => onOpen\(null\)\}/s);
 });
 
+test("the selected video page exposes a play link that opens YouTube in a new tab", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /href=\{detail\.meta\.source_url\}/);
+  assert.match(page, /target="_blank"/);
+  assert.match(page, /rel="noreferrer"/);
+  assert.match(styles, /\.hero-thumb a \{/);
+  assert.match(styles, /\.hero-thumb a:hover/);
+});
+
 test("the YT Sum brand returns users to the main library page", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /brand-row[^]*onClick=\{\(\) => \{\s*setView\("library"\);\s*setFilter\("all"\);\s*setSidebarOpen\(false\);\s*\}\}/s);
+  assert.match(page, /className="brand-row"[\s\S]*setView\("library"\)[\s\S]*setFilter\("all"\)[\s\S]*setSidebarOpen\(false\)/);
 });
