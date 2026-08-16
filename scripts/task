@@ -1,10 +1,18 @@
 #!/bin/bash
 
-export COPILOT_PROVIDER_TYPE=openai
-export COPILOT_PROVIDER_BASE_URL=http://localhost:11434
-export COPILOT_MODEL=qwen-task-compiler
-export COPILOT_OFFLINE=true
+# export COPILOT_PROVIDER_TYPE=openai
+# export COPILOT_PROVIDER_BASE_URL=http://localhost:11434
+# export COPILOT_MODEL=qwen-task-compiler
+# export COPILOT_OFFLINE=true
 
-copilot \
-  --agent task-compiler \
-  --prompt "$*"
+# copilot \
+#   --agent task-compiler \
+#   --prompt "$*"
+# load .env file
+set -a
+if [ -f .env ]; then
+    source .env
+fi
+export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+"$SCRIPT_DIR/task_compiler.py" "Fix duplicated orders returned by the API"
