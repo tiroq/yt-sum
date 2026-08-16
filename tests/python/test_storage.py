@@ -45,6 +45,26 @@ def test_library_round_trip_and_rescan(tmp_path: Path) -> None:
     assert second.get_video(meta.video_id) is not None
 
 
+def test_rescan_rebuilds_index_from_current_library_contents(tmp_path: Path) -> None:
+    storage = LibraryStorage(tmp_path)
+    stale = VideoMeta(video_id="stale-id", source_url="https://example.com/stale", title="Stale", channel="Old", status="complete")
+    stale_folder = storage.create_video_folder(stale)
+    storage.save_meta(stale, stale_folder)
+
+    live = VideoMeta(video_id="live-id", source_url="https://example.com/live", title="Live", channel="New", status="complete")
+    live_folder = storage.create_video_folder(live)
+    storage.save_meta(live, live_folder)
+
+    storage.delete_video("stale-id", delete_files=False)
+    final = LibraryStorage(tmp_path)
+
+    scanned = final.rescan()
+
+    assert scanned == 1
+    assert final.get_video("stale-id") is None
+    assert final.get_video("live-id") is not None
+
+
 def test_storage_exposes_each_immutable_transcript_artifact(tmp_path: Path) -> None:
     storage = LibraryStorage(tmp_path)
     original = TranscriptInfo(file="transcripts/original-en-original-1.md", language="en", kind="original", source="youtube", role="original")
