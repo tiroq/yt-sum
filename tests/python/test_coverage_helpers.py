@@ -111,19 +111,8 @@ def test_git_update_status_and_pull_paths(monkeypatch) -> None:
     assert dirty["clean"] is False
     assert dirty["diagnostic"] == "Local changes detected. Source updates are blocked until the working tree is clean."
 
-    def fake_pull(*args, **kwargs):
-        cmd = list(args)
-        if cmd[:2] == ["status", "--porcelain=v1"]:
-            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
-        if cmd[:3] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
-            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="origin/main\n", stderr="")
-        if cmd[:3] == ["rev-list", "--left-right", "--count"]:
-            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="1\t0\n", stderr="")
-        if cmd[0] == "pull":
-            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="fast-forward\n", stderr="")
-        return fake_git(*args, **kwargs)
-
-    monkeypatch.setattr(git_update, "_git", fake_pull)
+    monkeypatch.setattr(git_update, "source_update_status", lambda fetch=True: {"available": True, "clean": True, "branch": "main", "upstream": "origin/main", "ahead": 0, "behind": 1 if fetch else 0, "can_pull": True, "diagnostic": "1 upstream commit(s) are available." if fetch else "The source checkout is up to date."})
+    monkeypatch.setattr(git_update, "_git", lambda *args, **kwargs: subprocess.CompletedProcess(["git", *args], 0, stdout="fast-forward\n", stderr=""))
     pull = git_update.pull_source_update()
     assert pull["updated"] is True
     assert pull["restart_required"] is True
@@ -353,7 +342,9 @@ def test_provider_limits_and_client_branches(monkeypatch) -> None:
 
     class FailClient(DummyAsyncClient):
         async def post(self, url, headers=None, json=None):
-            raise ProviderError("offline")
+            request = httpx.Request("POST", url)
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError("offline", request=request, response=response)
 
     monkeypatch.setattr("ytsum.providers.httpx.AsyncClient", FailClient)
     monkeypatch.setattr(client, "_assert_privacy", lambda: None)
