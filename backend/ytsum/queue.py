@@ -470,7 +470,10 @@ class ProcessingQueue:
                 progress=0.30,
                 message="Downloading audio fallback",
             ):
+                self._log(job, "Starting audio download to fallback path")
                 audio_path = await self._thread_call(client.download_audio, extracted, work_dir)
+                self._log(job, f"Audio download completed: {audio_path}")
+                self._log(job, f"Audio file details: exists={audio_path.exists()}, size={audio_path.stat().st_size if audio_path.exists() else 'N/A'} bytes, readable={audio_path.is_file() if audio_path.exists() else False}")
             self._check_cancelled(job)
             await self._wait_until_resumed()
             async with self.resources.stage(
@@ -480,7 +483,9 @@ class ProcessingQueue:
                 progress=0.50,
                 message="Transcribing audio with Meeting Transcriber",
             ):
+                self._log(job, f"Sending audio to Meeting Transcriber: {audio_path}")
                 segments = await MeetingTranscriberBridge(settings).transcribe(audio_path)
+                self._log(job, f"Meeting Transcriber returned {len(segments)} segments")
             self._log(job, f"Transcribed {len(segments)} segments")
             self._stage(job, "transcript-normalize", 0.60)
             original = self._write_transcript(meta, folder, "original", settings.asr_language or extracted.original_language or "auto", "local_asr", "local_asr", settings.asr_engine, segments)

@@ -242,10 +242,21 @@ class YouTubeClient:
 
         clean_url = f"https://www.youtube.com/watch?v={video.video_id}"
         logger.info(f"Downloading audio for video {video.video_id}: {clean_url}")
+        logger.info(f"Audio download work directory: {work_dir} (exists={work_dir.exists()}, is_dir={work_dir.is_dir()})")
+        try:
+            logger.info(f"Testing work directory write permissions...")
+            test_file = work_dir / ".write-test"
+            test_file.write_text("test")
+            test_file.unlink()
+            logger.info(f"✓ Work directory is writable")
+        except Exception as e:
+            logger.error(f"✗ Work directory write test failed: {e}")
+            raise DownloadFailure(f"Cannot write to work directory: {e}")
 
         final_wav = work_dir / "audio-16k-mono.wav"
         source_prefix = work_dir / f"raw-audio-{uuid.uuid4().hex}"
         temp_converted = work_dir / f"converted-{uuid.uuid4().hex}.wav"
+        logger.info(f"Audio paths: final_wav={final_wav.name}, source_prefix={source_prefix.name}, temp_converted={temp_converted.name}")
         for candidate in [*work_dir.glob("source.*"), *work_dir.glob("download-source.*"), *work_dir.glob("download-converted.*"), *work_dir.glob("raw-audio-*.wav"), *work_dir.glob("raw-audio-*.*"), final_wav]:
             if candidate.is_file():
                 candidate.unlink(missing_ok=True)
@@ -296,8 +307,10 @@ class YouTubeClient:
                 source = next(iter(source_candidates), None)
                 if source:
                     logger.info(f"✓ Successfully downloaded audio using format: {format_spec}")
+                    logger.info(f"Source file: {source} (size={source.stat().st_size} bytes, readable={source.is_file()})")
                     if temp_converted.exists():
                         temp_converted.unlink(missing_ok=True)
+                    logger.info(f"Running ffmpeg: source={source}, output={temp_converted}")
                     result = subprocess.run(
                         ["ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(temp_converted)],
                         capture_output=True,
@@ -306,14 +319,19 @@ class YouTubeClient:
                     )
                     if result.returncode != 0:
                         error_msg = result.stderr[-2000:] or "ffmpeg audio conversion failed"
-                        logger.error(f"ffmpeg failed: {error_msg}")
+                        logger.error(f"✗ ffmpeg failed with return code {result.returncode}: {error_msg}")
                         raise DownloadFailure(error_msg)
+                    logger.info(f"ffmpeg conversion completed with return code {result.returncode}")
                     if not temp_converted.exists():
                         raise DownloadFailure("ffmpeg reported success but did not produce the converted WAV output")
+                    logger.info(f"Converted WAV created: {temp_converted} (size={temp_converted.stat().st_size} bytes)")
                     if final_wav.exists():
+                        logger.info(f"Removing existing final WAV: {final_wav}")
                         final_wav.unlink(missing_ok=True)
+                    logger.info(f"Atomically replacing final WAV from temp: {temp_converted} -> {final_wav}")
                     temp_converted.replace(final_wav)
                     logger.info(f"✓ Audio converted to 16kHz mono WAV for video {video.video_id}")
+                    logger.info(f"Final WAV location: {final_wav} (size={final_wav.stat().st_size} bytes, exists={final_wav.exists()})")
                     return final_wav
 
                 logger.warning(f"✗ No WAV file produced with format {format_spec}, trying next")
