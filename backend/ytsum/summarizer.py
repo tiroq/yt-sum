@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from typing import Callable
 from .models import AppSettings, ProviderSettings, SummaryTemplate
 from .providers import ProviderClient, ProviderError, estimate_chat_tokens
 
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = "You summarize source material faithfully. Never invent claims, quotes, people, or timestamps. Return Markdown only."
 
@@ -321,8 +323,14 @@ class Summarizer:
             from sentence_transformers import SentenceTransformer
             from sklearn.cluster import KMeans
         except ImportError as error:
-            raise RuntimeError("Cluster mode requires the optional 'cluster' dependencies") from error
+            message = (
+                "Cluster mode requires optional ML dependencies. "
+                "Install them with: .venv/bin/pip install -e '.[cluster]'"
+            )
+            logger.error("[cluster] optional dependency missing: %s", error)
+            raise RuntimeError(message) from error
         model = SentenceTransformer(self.settings.embedding_model, device=self.settings.embedding_device)
+        logger.info("[cluster] loading embedding model %s on device=%s", self.settings.embedding_model, self.settings.embedding_device)
         vectors = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
         count = min(self.settings.cluster_count, len(chunks))
         kmeans = KMeans(n_clusters=count, random_state=42, n_init="auto").fit(vectors)
