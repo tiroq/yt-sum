@@ -9,15 +9,13 @@ from ytsum.providers import AsyncRateLimiter, ProviderClient, ProviderError
 from ytsum.summarizer import Summarizer, split_text, strip_frontmatter
 
 
-def test_cluster_dependencies_are_optional() -> None:
+def test_cluster_dependencies_are_default_dependencies() -> None:
     project_file = Path(__file__).resolve().parents[2] / "pyproject.toml"
     config = tomllib.loads(project_file.read_text())
     dependencies = config["project"]["dependencies"]
-    optional = config["project"]["optional-dependencies"]
 
-    assert not any(dep.startswith("sentence-transformers") for dep in dependencies)
-    assert not any(dep.startswith("scikit-learn") for dep in dependencies)
-    assert any("sentence-transformers" in dep for dep in optional.get("cluster", []))
+    assert any(dep.startswith("sentence-transformers") for dep in dependencies)
+    assert any(dep.startswith("scikit-learn") for dep in dependencies)
 
 
 def test_cluster_mode_reports_clear_missing_dependency_message(monkeypatch) -> None:
