@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import os
 import signal
@@ -35,6 +36,13 @@ from .providers import ProviderClient, ProviderError
 from .transcriber import MeetingTranscriberBridge
 from .tts import MacSayTTS
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    force=True,
+)
+logger = logging.getLogger("ytsum.api")
 
 _context: ApplicationContext | None = None
 
