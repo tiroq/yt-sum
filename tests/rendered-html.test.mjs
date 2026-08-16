@@ -121,9 +121,11 @@ test("video deletion uses a dedicated dialog with toggle switches and OK/Cancel 
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /DeleteVideoDialog/);
   assert.match(page, /Delete from app|Удалить из приложения/);
-  assert.match(page, /Delete files from disk|Удалить данные с диска/);
+  assert.match(page, /Delete data from disk|Удалить данные с диска/);
   assert.match(page, /OK/);
   assert.match(page, /Cancel|Отмена/);
+  assert.match(page, /disabled=\{!canConfirm\}/);
+  assert.match(page, /canConfirm=\{deleteFromAppOnly \|\| deleteFilesFromDisk\}/);
 });
 
 test("the YT Sum brand returns users to the main library page", async () => {
