@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -38,6 +39,33 @@ class MeetingTranscriberBridge:
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
 
+    def _diagnostics(self, audio_path: Path) -> dict[str, object]:
+        resolved = audio_path.resolve()
+        exists = audio_path.exists()
+        is_file = audio_path.is_file() if exists else False
+        try:
+            size = audio_path.stat().st_size if exists else 0
+        except OSError as exc:
+            size = None
+            logger.warning("[transcribe] stat failed for audio %s: %s", audio_path, exc)
+        try:
+            readable = os.access(audio_path, os.R_OK)
+        except OSError as exc:
+            readable = False
+            logger.warning("[transcribe] os.access check failed for audio %s: %s", audio_path, exc)
+        parent = audio_path.parent
+        return {
+            "audio_path": str(audio_path),
+            "resolved": str(resolved),
+            "exists": exists,
+            "is_file": is_file,
+            "size_bytes": size,
+            "readable": readable,
+            "parent_exists": parent.exists(),
+            "parent_is_dir": parent.is_dir(),
+            "parent": str(parent),
+        }
+
     def _token(self) -> str:
         path = Path(self.settings.meeting_transcriber_token_file).expanduser()
         if not path.exists():
@@ -66,40 +94,35 @@ class MeetingTranscriberBridge:
             return {"ready": False, "address": address, "state": "unavailable", "reason": "unreachable"}
 
     async def transcribe(self, audio_path: Path, max_wait_seconds: int = 1800) -> list[TranscriptSegment]:
-        exists = audio_path.exists()
-        is_file = audio_path.is_file() if exists else False
-        size = audio_path.stat().st_size if exists else 0
-        parent = audio_path.parent
-        logger.info(
-            "[transcribe] audio_path=%s exists=%s is_file=%s size=%s readable=%s parent_exists=%s parent_is_dir=%s",
-            audio_path,
-            exists,
-            is_file,
-            size,
-            is_file,
-            parent.exists(),
-            parent.is_dir(),
-        )
-        if not exists:
+        diagnostics = self._diagnostics(audio_path)
+        logger.info("[transcribe] local audio diagnostics=%s", diagnostics)
+        if not diagnostics["exists"]:
             logger.error("[transcribe] audio file missing before upload: %s (resolved=%s)", audio_path, audio_path.resolve())
-        if exists and not is_file:
+        if diagnostics["exists"] and not diagnostics["is_file"]:
             logger.error("[transcribe] audio path exists but is not a regular file: %s", audio_path)
+        if diagnostics["readable"] is False:
+            logger.error("[transcribe] audio file is not readable by this process: %s", audio_path)
 
         token = self._token()
         url = f"{self.settings.meeting_transcriber_url.rstrip('/')}/v1/transcribe?include=transcript"
+        request_payload = {"path": str(audio_path.resolve()), "maxWaitSeconds": max_wait_seconds}
         headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": f"yt-sum-{audio_path.parent.name}-{audio_path.name}"}
         logger.info(
-            "[transcribe] POST %s with idempotency_key=%s path=%s max_wait_seconds=%s size_bytes=%s",
+            "[transcribe] POST endpoint=%s idempotency_key=%s request_payload=%s local_diagnostics=%s",
             url,
             headers["Idempotency-Key"],
-            audio_path.resolve(),
-            max_wait_seconds,
-            size,
+            request_payload,
+            diagnostics,
         )
         async with httpx.AsyncClient(timeout=max_wait_seconds + 30) as client:
-            response = await client.post(url, headers=headers, json={"path": str(audio_path.resolve()), "maxWaitSeconds": max_wait_seconds})
-        headers = getattr(response, "headers", {}) or {}
-        logger.info("[transcribe] Meeting Transcriber response: status=%s, content_type=%s", response.status_code, headers.get("content-type"))
+            response = await client.post(url, headers=headers, json=request_payload)
+        response_headers = getattr(response, "headers", {}) or {}
+        logger.info(
+            "[transcribe] Meeting Transcriber response: status=%s content_type=%s body_preview=%s",
+            response.status_code,
+            response_headers.get("content-type"),
+            (response.text or "")[:1000],
+        )
         if response.status_code == 202:
             raise TranscriptionBridgeError("Native transcription is still running; retry the job shortly")
         if response.status_code != 200:
@@ -108,20 +131,13 @@ class MeetingTranscriberBridge:
         if payload.get("state") == "error":
             details = payload.get("error") or "Native transcription failed"
             diagnostic = (
-                f"{details} | audio_path={audio_path} exists={exists} is_file={is_file} "
-                f"size_bytes={size} resolved={audio_path.resolve()} parent_exists={parent.exists()} "
-                f"parent_is_dir={parent.is_dir()}"
+                f"{details} | local_diagnostics={diagnostics} request_payload={request_payload}"
             )
             logger.error(
-                "[transcribe] native ASR reported an error for audio_path=%s exists=%s is_file=%s size_bytes=%s resolved=%s parent_exists=%s parent_is_dir=%s: %s",
-                audio_path,
-                exists,
-                is_file,
-                size,
-                audio_path.resolve(),
-                parent.exists(),
-                parent.is_dir(),
+                "[transcribe] native ASR reported an error: details=%s local_diagnostics=%s request_payload=%s",
                 details,
+                diagnostics,
+                request_payload,
             )
             raise TranscriptionBridgeError(diagnostic)
         content = payload.get("transcript")
