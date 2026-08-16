@@ -26,10 +26,39 @@ def language_matches(candidate: str, wanted: str) -> bool:
     return candidate == wanted or candidate.startswith(f"{wanted}-")
 
 
+def _selectable_language_key(code: str | None) -> str:
+    return (code or "").strip().lower().replace("_", "-")
+
+
+def _language_choice_priority(candidate: str, wanted: str) -> tuple[int, int, str]:
+    candidate_key = _selectable_language_key(candidate)
+    wanted_key = _selectable_language_key(wanted)
+    if candidate_key == f"{wanted_key}-orig":
+        return (0, 0, candidate_key)
+    if candidate_key == wanted_key:
+        return (1, 0, candidate_key)
+    if candidate_key.startswith(f"{wanted_key}-"):
+        return (2, len(candidate_key), candidate_key)
+    return (3, len(candidate_key), candidate_key)
+
+
 def matching_key(available: dict[str, Any], wanted: str) -> str | None:
-    if wanted in available:
-        return wanted
-    return next((key for key in available if language_matches(key, wanted)), None)
+    selectable = [
+        key
+        for key in available
+        if _selectable_language_key(key) != "live-chat" and language_matches(key, wanted)
+    ]
+    if not selectable:
+        return None
+    return min(selectable, key=lambda key: _language_choice_priority(key, wanted))
+
+
+def _iter_selectable_entries(available: dict[str, list[dict[str, Any]]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    return [
+        (language, entries)
+        for language, entries in available.items()
+        if _selectable_language_key(language) != "live-chat"
+    ]
 
 
 def select_subtitle(
@@ -53,11 +82,13 @@ def select_subtitle(
             return SubtitleChoice(auto_key, "original", automatic[auto_key])
 
     if allow_any:
-        if subtitles:
-            language, entries = next(iter(subtitles.items()))
+        selectable_subtitles = _iter_selectable_entries(subtitles)
+        if selectable_subtitles:
+            language, entries = selectable_subtitles[0]
             return SubtitleChoice(language, "original", entries)
-        if automatic:
-            language, entries = next(iter(automatic.items()))
+        selectable_automatic = _iter_selectable_entries(automatic)
+        if selectable_automatic:
+            language, entries = selectable_automatic[0]
             return SubtitleChoice(language, "original", entries)
     return None
 
@@ -73,11 +104,13 @@ def select_original_subtitle(
             return SubtitleChoice(human_key, "original", subtitles[human_key])
         if auto_key := matching_key(automatic, original_language):
             return SubtitleChoice(auto_key, "original", automatic[auto_key])
-    if subtitles:
-        language, entries = next(iter(subtitles.items()))
+    selectable_subtitles = _iter_selectable_entries(subtitles)
+    if selectable_subtitles:
+        language, entries = selectable_subtitles[0]
         return SubtitleChoice(language, "original", entries)
-    if automatic:
-        language, entries = next(iter(automatic.items()))
+    selectable_automatic = _iter_selectable_entries(automatic)
+    if selectable_automatic:
+        language, entries = selectable_automatic[0]
         return SubtitleChoice(language, "original", entries)
     return None
 

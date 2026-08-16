@@ -52,6 +52,16 @@ def test_original_subtitle_is_selected_independently_of_language_settings() -> N
     assert (choice.language, choice.kind) == ("en", "original")
 
 
+def test_original_subtitle_prefers_en_orig_and_ignores_live_chat() -> None:
+    choice = select_original_subtitle(
+        subtitles={"live_chat": [{"url": "chat"}], "en": [{"url": "human-en"}], "en-orig": [{"url": "human-en-orig"}]},
+        automatic={"ru": [{"url": "auto-ru"}]},
+        original_language="en",
+    )
+    assert choice is not None
+    assert (choice.language, choice.kind) == ("en-orig", "original")
+
+
 def test_parse_srt_and_write_clickable_markdown() -> None:
     content = """1
 00:00:01,000 --> 00:00:03,200
