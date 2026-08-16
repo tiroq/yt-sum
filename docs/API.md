@@ -20,6 +20,7 @@ Base URL: `http://127.0.0.1:8765/api`. The API is not designed for network expos
 | `POST` | `/videos/{id}/summaries` | Create a new summary with optional overrides |
 | `DELETE` | `/videos/{id}` | Remove index record; optional confirmed folder deletion |
 | `GET` | `/jobs` | Queue and recent jobs, including separate `download_items` and `llm_items` lane views |
+| `DELETE` | `/jobs` | Remove all inactive processing-history records while keeping queued and processing entries |
 | `POST` | `/jobs/pause` | Pause queue |
 | `POST` | `/jobs/resume` | Resume queue |
 | `POST` | `/jobs/stop` | Cancel all queued and currently running jobs |

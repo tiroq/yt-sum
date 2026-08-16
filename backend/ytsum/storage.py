@@ -845,18 +845,27 @@ class LibraryStorage:
         (self.logs_dir / f"{job_id}.log").unlink(missing_ok=True)
         return True
 
-    def delete_inactive_jobs(self, video_id: str) -> int:
-        """Delete every non-active processing history row for one video."""
+    def delete_inactive_jobs(self, video_id: str | None = None) -> int:
+        """Delete every non-active processing history row for one video or globally."""
         with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT id FROM jobs WHERE video_id=? AND status NOT IN ('queued', 'processing')""",
-                (video_id,),
-            ).fetchall()
-            if rows:
-                connection.execute(
-                    """DELETE FROM jobs WHERE video_id=? AND status NOT IN ('queued', 'processing')""",
+            if video_id is None:
+                rows = connection.execute(
+                    """SELECT id FROM jobs WHERE status NOT IN ('queued', 'processing')""",
+                ).fetchall()
+                if rows:
+                    connection.execute(
+                        """DELETE FROM jobs WHERE status NOT IN ('queued', 'processing')""",
+                    )
+            else:
+                rows = connection.execute(
+                    """SELECT id FROM jobs WHERE video_id=? AND status NOT IN ('queued', 'processing')""",
                     (video_id,),
-                )
+                ).fetchall()
+                if rows:
+                    connection.execute(
+                        """DELETE FROM jobs WHERE video_id=? AND status NOT IN ('queued', 'processing')""",
+                        (video_id,),
+                    )
         for row in rows:
             (self.logs_dir / f"{row['id']}.log").unlink(missing_ok=True)
         return len(rows)

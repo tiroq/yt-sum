@@ -429,6 +429,11 @@ def list_jobs() -> dict:
     return {"paused": context().queue.paused, "items": items, "download_items": download, "llm_items": llm}
 
 
+@app.delete("/api/jobs")
+def clear_inactive_jobs() -> dict:
+    return {"deleted": context().storage().delete_inactive_jobs()}
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_finished_job(job_id: str) -> dict:
     deleted = context().storage().delete_finished_job(job_id)

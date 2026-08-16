@@ -204,6 +204,28 @@ def test_removed_default_provider_stays_removed(monkeypatch, tmp_path: Path) -> 
         assert {provider["id"] for provider in reloaded["providers"]} == {"ollama"}
 
 
+def test_global_api_removes_inactive_job_history_but_keeps_active_work(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    from ytsum import api
+
+    api._context = None
+    with TestClient(api.app) as client:
+        client.post("/api/jobs/pause")
+        first = client.post("/api/videos", json={"urls": ["https://youtu.be/Gn64NNr3bqU"]}).json()["jobs"][0]
+        second = client.post("/api/videos", json={"urls": ["https://youtu.be/dQw4w9WgXcQ"]}).json()["jobs"][0]
+        storage = api.context().storage()
+        storage.update_job(first["id"], status="cancelled", execution_state="cancelled")
+        storage.update_job(second["id"], status="failed", stage="failed", error="network error")
+        active = storage.enqueue("keep-me", "https://youtu.be/keep-me", kind="refresh")
+
+        response = client.delete("/api/jobs")
+
+        assert response.json() == {"deleted": 2}
+        remaining = client.get("/api/jobs").json()["items"]
+        assert [item["id"] for item in remaining] == [active.id]
+
+
 def test_local_api_removes_only_finished_job_history(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))

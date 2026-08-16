@@ -231,6 +231,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .queue-panel { position: fixed; z-index: 45; right: 16px; top: 75px; bottom: 16px; width: min(390px, calc(100vw - 32px)); display: flex; flex-direction: column; padding: 20px; background: rgba(255,254,250,.97); border: 1px solid var(--line); border-radius: 19px; box-shadow: var(--shadow); backdrop-filter: blur(18px); }
 .queue-heading { padding-bottom: 15px; border-bottom: 1px solid var(--line-soft); }
 .queue-heading h2 { font-size: 21px; }
+.queue-heading-actions { display: flex; align-items: center; gap: 8px; }
+.queue-clear-inactive { width: 32px; height: 32px; color: var(--red); background: var(--red-soft); border-color: #f1d2cd; }
+.queue-clear-inactive:hover:not(:disabled) { background: #f5d9d4; }
+.queue-clear-inactive:disabled { opacity: .4; cursor: not-allowed; }
 .queue-controls { display: flex; gap: 8px; margin-top: 12px; }
 .queue-stop-all { flex: 1; border: 1px solid rgba(166,68,52,.35); border-radius: 10px; padding: 9px 11px; background: rgba(166,68,52,.08); color: #9b3f31; font: inherit; font-size: 12px; cursor: pointer; }
 .queue-stop-all:hover { background: rgba(166,68,52,.15); }
