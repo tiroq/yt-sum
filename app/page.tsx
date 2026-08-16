@@ -503,10 +503,26 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-        <div className="brand-row">
+        <div
+          className="brand-row"
+          role="button"
+          tabIndex={0}
+          aria-label="Go to the main library page"
+          onClick={() => { setView("library"); setFilter("all"); setSelectedId(null); setDetail(null); setSidebarOpen(false); }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setView("library");
+              setFilter("all");
+              setSelectedId(null);
+              setDetail(null);
+              setSidebarOpen(false);
+            }
+          }}
+        >
           <div className="brand-mark"><Sparkles size={19} strokeWidth={2.4} /></div>
           <div><div className="brand-name">YT Sum</div><div className="brand-subtitle">local intelligence</div></div>
-          <IconButton className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></IconButton>
+          <div className="brand-close-action"><IconButton className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close" tooltip="Закрыть меню. Фокус остаётся на странице."><X size={18} /></IconButton></div>
         </div>
 
         <button className="add-button" onClick={openAddDialog}><Plus size={18} />{t.add}</button>

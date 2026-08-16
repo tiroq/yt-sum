@@ -30,10 +30,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sidebar { height: 100vh; display: flex; flex-direction: column; padding: 22px 16px 16px; color: #edf5f1; background: linear-gradient(165deg, #163e32 0%, #102e26 68%, #0d261f 100%); border-right: 1px solid rgba(255,255,255,.07); position: relative; z-index: 20; }
 .sidebar::before { content: ""; position: absolute; inset: 0; opacity: .42; pointer-events: none; background: radial-gradient(circle at 12% 0%, rgba(78, 150, 121, .42), transparent 34%), linear-gradient(115deg, transparent 40%, rgba(255,255,255,.025)); }
 .sidebar > * { position: relative; }
-.brand-row { display: flex; align-items: center; gap: 11px; padding: 0 7px 22px; }
+.brand-row { display: flex; align-items: center; gap: 11px; padding: 0 7px 22px; cursor: pointer; color: inherit; text-align: left; }
+.brand-row:focus-visible { outline: 3px solid rgba(232, 168, 60, 0.35); outline-offset: 2px; }
 .brand-mark { width: 39px; height: 39px; display: grid; place-items: center; color: #173d31; background: var(--amber); border-radius: 12px 12px 12px 4px; box-shadow: 0 8px 22px rgba(0,0,0,.22); }
 .brand-name { font-weight: 760; letter-spacing: -.02em; font-size: 18px; line-height: 1.1; }
 .brand-subtitle { color: #97b2a7; margin-top: 3px; font: 600 9px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .14em; text-transform: uppercase; }
+.brand-close-action { margin-left: auto; }
 .brand-row .mobile-only { margin-left: auto; }
 
 .add-button { width: 100%; min-height: 44px; border: 0; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #17382e; background: var(--amber); font-weight: 740; cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,.17); transition: transform .2s, background .2s; }

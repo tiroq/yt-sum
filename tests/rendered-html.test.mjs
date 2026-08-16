@@ -104,3 +104,8 @@ test("selected prompt artifacts can be dismissed from the exact result view", as
   assert.match(page, /selected\?\.artifact\.id === artifact\.id \? null : artifact/);
   assert.doesNotMatch(page, /secondary-button.*onClick=\{\(\) => onOpen\(null\)\}/s);
 });
+
+test("the YT Sum brand returns users to the main library page", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /brand-row[^]*onClick=\{\(\) => \{\s*setView\("library"\);\s*setFilter\("all"\);\s*setSidebarOpen\(false\);\s*\}\}/s);
+});
