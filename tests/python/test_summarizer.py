@@ -20,6 +20,21 @@ def test_cluster_dependencies_are_optional() -> None:
     assert any("sentence-transformers" in dep for dep in optional.get("cluster", []))
 
 
+def test_cluster_mode_reports_clear_missing_dependency_message(monkeypatch) -> None:
+    summarizer = Summarizer(AppSettings(), [ProviderSettings(id="x", name="X", kind="openai", base_url="http://example/v1", model="a")], SummaryTemplate(id="t", name_ru="Тест", name_en="Test", prompt="Summarize in {language}."))
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in {"sentence_transformers", "sklearn", "sklearn.cluster", "numpy"}:
+            raise ImportError(f"No module named {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    with pytest.raises(RuntimeError, match=r"\.venv/bin/pip install -e '\.\[cluster\]'"):
+        summarizer._cluster(["paragraph one", "paragraph two"])
+
+
 def test_split_text_covers_source_and_respects_size() -> None:
     source = "\n\n".join(f"Paragraph {index}: " + "word " * 30 for index in range(20))
     chunks = split_text(source, maximum=420, overlap=0)
