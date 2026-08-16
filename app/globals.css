@@ -245,6 +245,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .clipboard-status { margin: 10px 0 0; color: #2f6d55; font-size: 11px; line-height: 1.45; }
 .modal-note { display: flex; gap: 8px; align-items: center; margin-top: 11px; color: #86611e; background: var(--amber-soft); border-radius: 9px; padding: 9px 11px; font-size: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.delete-settings { display: grid; gap: 4px; margin-top: 18px; }
+.delete-settings .toggle-switch { margin-top: 0; padding: 10px 0; border-radius: 10px; }
+.delete-settings .toggle-switch:hover { background: rgba(22, 62, 50, 0.03); }
 
 .queue-panel { position: fixed; z-index: 46; right: 16px; top: 75px; bottom: 16px; width: min(390px, calc(100vw - 32px)); display: flex; flex-direction: column; padding: 20px; background: rgba(255,254,250,.97); border: 1px solid var(--line); border-radius: 19px; box-shadow: var(--shadow); backdrop-filter: blur(18px); }
 .queue-heading { padding-bottom: 15px; border-bottom: 1px solid var(--line-soft); }

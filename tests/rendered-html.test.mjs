@@ -117,6 +117,15 @@ test("the selected video page exposes a play link that opens YouTube in a new ta
   assert.match(styles, /\.hero-thumb a:hover/);
 });
 
+test("video deletion uses a dedicated dialog with toggle switches and OK/Cancel actions", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /DeleteVideoDialog/);
+  assert.match(page, /Delete from app|Удалить из приложения/);
+  assert.match(page, /Delete files from disk|Удалить данные с диска/);
+  assert.match(page, /OK/);
+  assert.match(page, /Cancel|Отмена/);
+});
+
 test("the YT Sum brand returns users to the main library page", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /className="brand-row"[\s\S]*setView\("library"\)[\s\S]*setFilter\("all"\)[\s\S]*setSidebarOpen\(false\)/);

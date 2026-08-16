@@ -205,6 +205,9 @@ export default function Home() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(true);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteFromAppOnly, setDeleteFromAppOnly] = useState(true);
+  const [deleteFilesFromDisk, setDeleteFilesFromDisk] = useState(false);
 
   const language: UiLanguage = isSupportedUiLanguage(settings?.interface_language) ? settings!.interface_language : "ru";
   const t = createUiDictionary(language);
@@ -463,12 +466,23 @@ export default function Home() {
   }
 
   async function deleteVideo() {
-    if (!detail || !window.confirm(language === "ru" ? "Убрать видео из библиотеки?" : "Remove this video from the library?")) return;
-    const deleteFiles = window.confirm(language === "ru" ? "Также удалить локальную папку и все файлы?" : "Also delete the local folder and all files?");
-    await request(`/videos/${detail.meta.video_id}?delete_files=${deleteFiles}`, { method: "DELETE" });
-    setSelectedId(null);
-    setDetail(null);
-    await refresh();
+    if (!detail) return;
+    setDeleteFromAppOnly(true);
+    setDeleteFilesFromDisk(false);
+    setDeleteDialogOpen(true);
+  }
+
+  async function confirmDeleteVideo() {
+    if (!detail) return;
+    setDeleteDialogOpen(false);
+    try {
+      await request(`/videos/${detail.meta.video_id}?delete_files=${deleteFilesFromDisk}`, { method: "DELETE" });
+      setSelectedId(null);
+      setDetail(null);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   async function deleteJobHistory(job: Job) {
@@ -601,6 +615,22 @@ export default function Home() {
       </section>
 
       {addOpen ? <AddDialog links={links} setLinks={setLinks} onClose={closeAddDialog} onAdd={addVideos} language={language} /> : null}
+      {deleteDialogOpen && detail ? <DeleteVideoDialog
+        open={deleteDialogOpen}
+        deleteFromAppOnly={deleteFromAppOnly}
+        deleteFilesFromDisk={deleteFilesFromDisk}
+        onToggleAppOnly={(value) => {
+          setDeleteFromAppOnly(value);
+          if (!value) setDeleteFilesFromDisk(false);
+        }}
+        onToggleFiles={(value) => {
+          setDeleteFilesFromDisk(value);
+          if (value) setDeleteFromAppOnly(false);
+        }}
+        onCancel={() => setDeleteDialogOpen(false)}
+        onConfirm={confirmDeleteVideo}
+        language={language}
+      /> : null}
       {queueOpen ? <QueuePanel jobs={jobs} videos={videos} paused={health?.queue_paused ?? false} close={() => setQueueOpen(false)} onSelectVideo={(videoId) => { setSelectedId(videoId); setView("library"); setQueueOpen(false); }} refresh={refresh} language={language} /> : null}
       {error && online ? <div className="toast"><AlertCircle size={18} /><span>{error}</span><IconButton onClick={() => setError("")} aria-label="Dismiss error" tooltip="Закрыть сообщение об ошибке. Выполненное действие не отменяется."><X size={16} /></IconButton></div> : null}
       {notice ? <div className="toast success" role="status"><CheckCircle2 size={18} /><span>{notice}</span><IconButton onClick={() => setNotice("")} aria-label="Dismiss notification" tooltip="Закрыть уведомление."><X size={16} /></IconButton></div> : null}
@@ -685,6 +715,10 @@ function EmptyState({ onAdd, title, body }: { onAdd: (event: React.MouseEvent<HT
 
 function OfflineState({ message, onRetry, language }: { message: string; onRetry: () => void; language: "ru" | "en" }) {
   return <div className="empty-state offline-state"><div className="empty-orbit danger"><WifiOff size={32} /></div><h1>{language === "ru" ? "Сервис не отвечает" : "Service is unavailable"}</h1><p>{message}</p><button className="primary-button" onClick={onRetry}><RefreshCw size={17} />{language === "ru" ? "Проверить снова" : "Try again"}</button><code>./scripts/dev.sh</code></div>;
+}
+
+function DeleteVideoDialog({ deleteFromAppOnly, deleteFilesFromDisk, onToggleAppOnly, onToggleFiles, onCancel, onConfirm, language }: { deleteFromAppOnly: boolean; deleteFilesFromDisk: boolean; onToggleAppOnly: (value: boolean) => void; onToggleFiles: (value: boolean) => void; onCancel: () => void; onConfirm: () => void; language: "ru" | "en" }) {
+  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-video-dialog-title"><div className="modal-heading"><div><span className="overline">DELETE</span><h2 id="delete-video-dialog-title">{language === "ru" ? "Удалить видео" : "Delete video"}</h2></div><IconButton className="icon-button" onClick={onCancel} aria-label="Close" tooltip={language === "ru" ? "Закрыть окно удаления." : "Close delete dialog."}><X size={18} /></IconButton></div><div className="delete-settings"><button type="button" className={`toggle-switch ${deleteFromAppOnly ? "on" : ""}`} role="switch" aria-checked={deleteFromAppOnly} aria-label={language === "ru" ? "Удалить из приложения" : "Delete from app"} onClick={() => onToggleAppOnly(!deleteFromAppOnly)} title={language === "ru" ? "Удалить из приложения" : "Delete from app"}><span className="toggle-switch-track"><span className="toggle-switch-knob" /></span><span className="toggle-switch-label">{language === "ru" ? "Удалить из приложения" : "Delete from app"}</span></button><button type="button" className={`toggle-switch ${deleteFilesFromDisk ? "on" : ""}`} role="switch" aria-checked={deleteFilesFromDisk} aria-label={language === "ru" ? "Удалить данные с диска" : "Delete data from disk"} onClick={() => onToggleFiles(!deleteFilesFromDisk)} title={language === "ru" ? "Удалить данные с диска" : "Delete data from disk"}><span className="toggle-switch-track"><span className="toggle-switch-knob" /></span><span className="toggle-switch-label">{language === "ru" ? "Удалить данные с диска" : "Delete data from disk"}</span></button></div><div className="modal-actions"><button className="ghost-button" onClick={onCancel}>{language === "ru" ? "Отмена" : "Cancel"}</button><button className="primary-button" onClick={onConfirm}>{language === "ru" ? "OK" : "OK"}</button></div></section></div>;
 }
 
 function AddDialog({ links, setLinks, onClose, onAdd, language }: { links: string; setLinks: (value: string) => void; onClose: () => void; onAdd: () => void; language: "ru" | "en" }) {
