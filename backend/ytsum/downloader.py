@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import random
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +15,8 @@ import yt_dlp
 
 from .captions import SubtitleChoice, select_original_subtitle, select_subtitle
 from .models import AppSettings, PlaylistMeta
+
+logger = logging.getLogger(__name__)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -116,6 +120,11 @@ class YouTubeClient:
                 "http": lambda attempt: min(300, 10 * (2 ** attempt)),
                 "extractor": lambda attempt: min(300, 10 * (2 ** attempt)),
             },
+            # Handle age-gated and regional content
+            "socket_timeout": 60,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
         }
         if use_cookies:
             if self.settings.cookie_file:
@@ -229,32 +238,97 @@ class YouTubeClient:
 
     def download_audio(self, video: ExtractedVideo, work_dir: Path) -> Path:
         work_dir.mkdir(parents=True, exist_ok=True)
-        options = self._base_options(bool(self.settings.cookie_file or self.settings.cookie_browser))
-        options.update({
-            "format": "bestaudio/best",
-            "outtmpl": str(work_dir / "source.%(ext)s"),
-            "noplaylist": True,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "wav",
-                    "preferredquality": "192",
+        
+        # Use clean YouTube URL format like the debug script
+        clean_url = f"https://www.youtube.com/watch?v={video.video_id}"
+        logger.info(f"Downloading audio for video {video.video_id}: {clean_url}")
+        
+        # Try multiple format specs in order of preference, falling back if one fails
+        format_specs = [
+            "bestaudio/best",  # Best audio stream
+            "bestaudio",  # Just audio if available
+            "best",  # Any best format
+            "bestvideo+bestaudio/best",  # Video + audio combined
+            "worstaudio",  # Even the worst audio is better than nothing
+        ]
+        
+        last_error = None
+        last_format = None
+        
+        for format_spec in format_specs:
+            last_format = format_spec
+            logger.info(f"Trying format: {format_spec}")
+            
+            try:
+                # Match debug script options exactly - minimal configuration
+                options = {
+                    "format": format_spec,
+                    "outtmpl": str(work_dir / "source.%(ext)s"),
+                    "quiet": False,
+                    "no_warnings": False,
+                    "socket_timeout": 60,
+                    "http_headers": {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    },
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "wav",
+                            "preferredquality": "192",
+                        }
+                    ],
                 }
-            ],
-        })
-        try:
-            with yt_dlp.YoutubeDL(options) as downloader:
-                downloader.download([video.url])
-        except yt_dlp.utils.DownloadError as error:
-            raise DownloadFailure(str(error)) from error
-        source = next((path for path in work_dir.glob("source.wav") if path.suffix != ".part"), None)
-        if not source:
-            raise DownloadFailure("yt-dlp did not produce an audio file")
-        wav_path = work_dir / "audio-16k-mono.wav"
-        result = subprocess.run(["ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav_path)], capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            raise DownloadFailure(result.stderr[-2000:] or "ffmpeg audio conversion failed")
-        return wav_path
+                
+                with yt_dlp.YoutubeDL(options) as downloader:
+                    downloader.download([clean_url])
+                
+                # If download succeeded, look for the extracted WAV file
+                source = next((path for path in work_dir.glob("source.wav") if path.suffix != ".part"), None)
+                if source:
+                    logger.info(f"✓ Successfully downloaded audio using format: {format_spec}")
+                    wav_path = work_dir / "audio-16k-mono.wav"
+                    result = subprocess.run(
+                        ["ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav_path)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if result.returncode != 0:
+                        error_msg = result.stderr[-2000:] or "ffmpeg audio conversion failed"
+                        logger.error(f"ffmpeg failed: {error_msg}")
+                        raise DownloadFailure(error_msg)
+                    logger.info(f"✓ Audio converted to 16kHz mono WAV for video {video.video_id}")
+                    return wav_path
+                else:
+                    # Format worked but no WAV produced, try next format
+                    logger.warning(f"✗ No WAV file produced with format {format_spec}, trying next")
+                    last_error = "yt-dlp did not produce an audio file"
+                    # Clean up for next attempt
+                    for f in work_dir.glob("source.*"):
+                        f.unlink(missing_ok=True)
+                    continue
+                    
+            except yt_dlp.utils.DownloadError as error:
+                error_msg = str(error)
+                logger.warning(f"✗ Format {format_spec} failed: {error_msg[:200]}")
+                last_error = error_msg
+                # Clean up for next attempt
+                for f in work_dir.glob("source.*"):
+                    f.unlink(missing_ok=True)
+                continue
+            except Exception as error:
+                error_msg = str(error)
+                logger.warning(f"✗ Unexpected error with format {format_spec}: {error_msg[:200]}")
+                last_error = error_msg
+                # Clean up for next attempt
+                for f in work_dir.glob("source.*"):
+                    f.unlink(missing_ok=True)
+                continue
+        
+        # If all formats failed, provide detailed error message
+        error_details = f"All {len(format_specs)} format specs failed for video {video.video_id}. Last format: {last_format}, Last error: {last_error[:500]}"
+        logger.error(error_details)
+        raise DownloadFailure(error_details)
 
     def cache_thumbnail(self, video: ExtractedVideo, folder: Path) -> Path | None:
         if not video.thumbnail_url:

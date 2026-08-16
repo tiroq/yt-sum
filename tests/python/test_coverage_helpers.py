@@ -227,6 +227,16 @@ def test_downloader_helpers_and_fallback_paths(monkeypatch, tmp_path: Path) -> N
         def __init__(self, options):
             super().__init__(options)
 
+        def extract_info(self, url, download=False):
+            # Support probing for formats
+            return {
+                "id": "test123",
+                "formats": [
+                    {"format_id": "140", "acodec": "mp4a", "vcodec": "none"},
+                    {"format_id": "251", "acodec": "opus", "vcodec": "none"},
+                ]
+            }
+
         def download(self, urls):
             (tmp_path / "source.wav").write_bytes(b"audio")
 
