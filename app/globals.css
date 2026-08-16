@@ -166,6 +166,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .artifact-panel-card .markdown { max-width: none; }
 .artifact-panel-card .nav-stack { display: grid; gap: 10px; }
 .artifact-panel-card .nav-item { width: 100%; justify-content: flex-start; }
+.artifact-panel-card .nav-item.active { color: var(--ink); background: rgba(22, 62, 50, 0.06); }
+.artifact-panel-card .nav-item.active > span:last-child, .artifact-panel-card .nav-item.active small { color: var(--muted); }
 .artifact-panel-card .nav-item small { margin-left: auto; }
 .template-grid { display: grid; gap: 10px; }
 .template-card { padding: 12px 14px; border: 1px solid var(--line-soft); border-radius: 12px; background: rgba(250,249,244,.7); }
