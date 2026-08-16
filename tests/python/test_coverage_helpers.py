@@ -117,7 +117,7 @@ def test_git_update_status_and_pull_paths(monkeypatch) -> None:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
         if cmd[:3] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="origin/main\n", stderr="")
-        if cmd[:4] == ["rev-list", "--left-right", "--count"]:
+        if cmd[:3] == ["rev-list", "--left-right", "--count"]:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="1\t0\n", stderr="")
         if cmd[0] == "pull":
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="fast-forward\n", stderr="")
@@ -332,6 +332,9 @@ def test_provider_limits_and_client_branches(monkeypatch) -> None:
                 raise ProviderError(f"status={self.status_code}")
 
     class DummyAsyncClient:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+
         async def __aenter__(self):
             return self
 
