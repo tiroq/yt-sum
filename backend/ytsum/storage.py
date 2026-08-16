@@ -600,15 +600,30 @@ class LibraryStorage:
         return artifact, path.read_text(encoding="utf-8")
 
     def rescan(self) -> int:
-        count = 0
+        live_video_ids: set[str] = set()
         for meta_path in self.library_dir.glob("*/.meta.json"):
             try:
                 meta = VideoMeta.model_validate_json(meta_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
+            live_video_ids.add(meta.video_id)
             self.upsert_video(meta, meta_path.parent)
-            count += 1
-        return count
+
+        stale_video_ids: list[str] = []
+        with self._connect() as connection:
+            rows = connection.execute("SELECT video_id FROM videos").fetchall()
+            for row in rows:
+                video_id = row["video_id"]
+                if video_id not in live_video_ids:
+                    stale_video_ids.append(video_id)
+
+        if stale_video_ids:
+            placeholders = ", ".join("?" for _ in stale_video_ids)
+            with self._connect() as connection:
+                connection.execute(f"DELETE FROM video_search WHERE video_id IN ({placeholders})", stale_video_ids)
+                connection.execute(f"DELETE FROM videos WHERE video_id IN ({placeholders})", stale_video_ids)
+
+        return len(live_video_ids)
 
     def mark_summaries_stale(self) -> int:
         count = 0

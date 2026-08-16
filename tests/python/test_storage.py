@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from ytsum.models import JobStageEvent, PlaylistMeta, PromptArtifact, TranscriptInfo, VideoMeta
@@ -55,7 +56,7 @@ def test_rescan_rebuilds_index_from_current_library_contents(tmp_path: Path) -> 
     live_folder = storage.create_video_folder(live)
     storage.save_meta(live, live_folder)
 
-    storage.delete_video("stale-id", delete_files=False)
+    shutil.rmtree(stale_folder)
     final = LibraryStorage(tmp_path)
 
     scanned = final.rescan()
