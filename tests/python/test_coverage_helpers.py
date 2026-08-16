@@ -228,7 +228,7 @@ def test_downloader_helpers_and_fallback_paths(monkeypatch, tmp_path: Path) -> N
             super().__init__(options)
 
         def download(self, urls):
-            (tmp_path / "source.mp3").write_bytes(b"audio")
+            (tmp_path / "source.wav").write_bytes(b"audio")
 
     monkeypatch.setattr("ytsum.downloader.yt_dlp.YoutubeDL", AudioYoutubeDL)
     monkeypatch.setattr("ytsum.downloader.subprocess.run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
