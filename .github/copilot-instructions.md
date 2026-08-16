@@ -1,56 +1,67 @@
 # Copilot instructions for YT Sum
 
-This project is a local-first YouTube transcript and summarization app with:
+This repo is a local-first YouTube transcript and summarization app. The main boundaries are:
 
-- a TypeScript/React frontend under `app/`;
-- a Python FastAPI backend under `backend/ytsum/`;
-- JavaScript tests under `tests/*.test.mjs`;
-- Python tests under `tests/python/`;
-- local automation through `Justfile`.
+- Frontend: `app/` (Next.js/React UI)
+- Backend: `backend/ytsum/` (FastAPI app, processing pipeline, storage, local library logic)
+- Browser extension: `browser-extension/` (Manifest V3 extension)
+- Tests: `tests/*.test.mjs` for JavaScript, `tests/python/` for Python
+- Project docs: `README.md`, `docs/`, and `Justfile`
 
-## Required engineering rules
+## Working rules
 
-- Preserve existing user-facing behavior unless the task explicitly asks for a behavior change.
-- Prefer tests that exercise public functions, API endpoints, storage behavior, and user-visible flows.
-- Do not add superficial tests that only execute lines without assertions.
-- Do not weaken production code, delete behavior, or relax assertions to increase coverage.
-- Do not skip, xfail, or remove tests to make a coverage gate pass.
-- Do not mock the unit under test. Mock only external boundaries such as network, filesystem roots, subprocesses, time, or OS APIs.
-- Keep comments in English.
-- Run relevant checks before finishing.
+- Preserve current user-facing behavior unless the task explicitly asks for a behavior change.
+- Prefer tests that exercise public APIs, backend storage flows, and user-visible behavior rather than isolated implementation details.
+- Do not add superficial tests that only execute code without assertions.
+- Do not weaken production code or relax assertions to satisfy coverage.
+- Do not skip, xfail, or delete tests to hide regressions.
+- Mock only external boundaries such as the network, filesystem roots, subprocesses, clocks, or OS APIs; avoid mocking the unit under test.
+- Keep comments and docs in English.
+- Run the relevant validation before finishing, using the smallest check that covers the changed behavior.
 
-## Standard commands
+## Repository workflow
 
-Use these commands from the repository root:
+Use the repo-root commands in the order that matches the change:
 
 ```bash
+just check
 just test
 just coverage
-just check
+just build
 ```
 
-If `just coverage` fails because the local Python dev environment does not yet include `coverage`, run:
+Useful local runtime commands:
+
+```bash
+just start
+just stop
+just api-restart
+```
+
+If coverage setup is missing in the local Python environment, install it with:
 
 ```bash
 uv sync --locked --extra dev
 ```
 
-Then retry `just coverage`.
+## Architecture and conventions
 
-## Coverage policy
+- Start with the product docs in [README.md](../README.md) and the detailed specs under [docs](../docs) before changing behavior that affects file formats, pipeline semantics, or the API contract.
+- For product behavior changes, check [docs/SPECIFICATION.md](../docs/SPECIFICATION.md), [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), and [docs/FILE_FORMAT.md](../docs/FILE_FORMAT.md) first.
+- Keep changes small and aligned with the existing local-first architecture: the app stores data in the user-selected library folder and rebuilds local indexes when needed.
+- When a fix affects transcript processing, queueing, or library metadata, prefer end-to-end or public-surface tests in `tests/` and `tests/python/`.
 
-The target is 100% meaningful coverage:
+## Coverage expectations
 
-- Python backend: branch-aware coverage configured in `pyproject.toml`.
-- JavaScript frontend helpers/UI tests: line, branch, and function coverage checked by `scripts/js-coverage-gate.mjs`.
+The project is configured for strict coverage gates:
 
-Coverage work must be incremental:
+- JavaScript coverage: line, branch, and function coverage for exercised files via `scripts/js-coverage-gate.mjs`
+- Python coverage: branch-aware coverage for `backend/` via `pyproject.toml`
 
-1. Run `just coverage`.
-2. Identify the smallest uncovered behavior cluster.
-3. Add or improve tests for that behavior.
-4. Run the focused test file.
-5. Run `just coverage` again.
-6. Repeat until the gate passes.
+Use the incremental workflow:
 
-When a file appears structurally untestable, first refactor toward pure helper functions or dependency injection, then test the extracted behavior. Keep refactors small and covered by tests.
+1. Run the focused test file or relevant suite.
+2. Run `just coverage` when the behavior is ready.
+3. Add or improve tests for the smallest uncovered behavior cluster before broadening scope.
+
+This repo intentionally refuses cheap coverage-only changes; fix the actual behavior and keep tests meaningful.
