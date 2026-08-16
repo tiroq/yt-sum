@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
 
 from ytsum import git_update, main
@@ -71,6 +72,8 @@ def test_keychain_round_trip_and_errors(monkeypatch) -> None:
 
 
 def test_git_update_status_and_pull_paths(monkeypatch) -> None:
+    real_git = git_update._git
+
     def repo_false(*args, **kwargs):
         return subprocess.CompletedProcess(["git", *args], 1, stdout="", stderr="fatal: not a git repo")
 
@@ -89,9 +92,7 @@ def test_git_update_status_and_pull_paths(monkeypatch) -> None:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="origin/main\n", stderr="")
         if cmd[:2] == ["fetch", "--quiet"]:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
-        if cmd[:4] == ["rev-list", "--left-right", "--count"]:
-            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="0\t0\n", stderr="")
-        if cmd[:3] == ["rev-list", "--left-right", "--count"]:
+        if cmd[:3] == ["rev-list", "--left-right", "--count"] or cmd[:4] == ["rev-list", "--left-right", "--count", "HEAD...origin/main"]:
             return subprocess.CompletedProcess(["git", *cmd], 0, stdout="0\t0\n", stderr="")
         raise AssertionError(cmd)
 
@@ -111,23 +112,46 @@ def test_git_update_status_and_pull_paths(monkeypatch) -> None:
     assert dirty["clean"] is False
     assert dirty["diagnostic"] == "Local changes detected. Source updates are blocked until the working tree is clean."
 
-    monkeypatch.setattr(git_update, "source_update_status", lambda fetch=True: {"available": True, "clean": True, "branch": "main", "upstream": "origin/main", "ahead": 0, "behind": 1 if fetch else 0, "can_pull": True, "diagnostic": "1 upstream commit(s) are available." if fetch else "The source checkout is up to date."})
-    monkeypatch.setattr(git_update, "_git", lambda *args, **kwargs: subprocess.CompletedProcess(["git", *args], 0, stdout="fast-forward\n", stderr=""))
+    revlist_calls = {"count": 0}
+
+    def fake_pull(*args, **kwargs):
+        cmd = list(args)
+        if cmd[:2] == ["rev-parse", "--is-inside-work-tree"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="true\n", stderr="")
+        if cmd[:2] == ["status", "--porcelain=v1"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
+        if cmd[:2] == ["branch", "--show-current"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="main\n", stderr="")
+        if cmd[:3] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="origin/main\n", stderr="")
+        if cmd[:2] == ["fetch", "--quiet"]:
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="", stderr="")
+        if cmd[:3] == ["rev-list", "--left-right", "--count"] or cmd[:4] == ["rev-list", "--left-right", "--count", "HEAD...origin/main"]:
+            revlist_calls["count"] += 1
+            stdout = "0\t1\n" if revlist_calls["count"] == 1 else "0\t0\n"
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout=stdout, stderr="")
+        if cmd[0] == "pull":
+            return subprocess.CompletedProcess(["git", *cmd], 0, stdout="fast-forward\n", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(git_update, "_git", fake_pull)
     pull = git_update.pull_source_update()
     assert pull["updated"] is True
     assert pull["restart_required"] is True
 
+    monkeypatch.setattr(git_update, "_git", real_git)
+
     def fake_timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd="git", timeout=30)
 
-    monkeypatch.setattr(git_update, "_git", fake_timeout)
+    monkeypatch.setattr(git_update.subprocess, "run", fake_timeout)
     with pytest.raises(git_update.GitUpdateError, match="did not finish in time"):
-        git_update.source_update_status()
+        git_update._git("status")
 
     def fake_missing(*args, **kwargs):
         raise FileNotFoundError
 
-    monkeypatch.setattr(git_update, "_git", fake_missing)
+    monkeypatch.setattr(git_update.subprocess, "run", fake_missing)
     with pytest.raises(git_update.GitUpdateError, match="Git is not installed"):
         git_update._git("status")
 
