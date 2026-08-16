@@ -25,3 +25,26 @@ test("groupVideos accepts future classifier topics without a UI change", () => {
   assert.deepEqual(groups.map((group) => group.label), ["AI", "Uncategorized"]);
   assert.deepEqual(groups[0].videos.map((video) => video.video_id), ["1"]);
 });
+
+test("sortVideos falls back to the stable video ID when titles are equal", () => {
+  const sameTitleVideos = [
+    { video_id: "b", title: "same title" },
+    { video_id: "a", title: "same title" },
+  ];
+
+  assert.deepEqual(sortVideos(sameTitleVideos).map((video) => video.video_id), ["a", "b"]);
+});
+
+test("groupVideos falls back to an uncategorized bucket for unknown groupings", () => {
+  const groups = groupVideos(
+    [
+      { video_id: "1", title: "Alpha", tags: ["Work"] },
+      { video_id: "2", title: "Beta" },
+    ],
+    "unknown",
+    "Uncategorized",
+  );
+
+  assert.deepEqual(groups.map((group) => group.label), ["Uncategorized"]);
+  assert.deepEqual(groups[0].videos.map((video) => video.video_id), ["1", "2"]);
+});

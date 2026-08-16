@@ -14,3 +14,18 @@ test("sends the video URL with optional bearer authentication", async () => {
 test("returns a retryable safe error when the service is unreachable", async () => {
   await assert.rejects(() => enqueueVideo("https://youtu.be/Gn64NNr3bqU", { serviceUrl: "http://127.0.0.1:8765" }, async () => { throw new TypeError("offline"); }), (error) => error instanceof QueueApiError && error.retryable);
 });
+
+test("includes server detail text and marks HTTP 500s as retryable", async () => {
+  const fetchStub = async () => new Response(JSON.stringify({ detail: "queue engine is down" }), { status: 500 });
+
+  await assert.rejects(
+    () => enqueueVideo("https://youtu.be/Gn64NNr3bqU", { serviceUrl: "http://127.0.0.1:8765" }, fetchStub),
+    (error) => {
+      assert.equal(error.name, "QueueApiError");
+      assert.equal(error.status, 500);
+      assert.equal(error.retryable, true);
+      assert.match(error.message, /queue engine is down/);
+      return true;
+    },
+  );
+});

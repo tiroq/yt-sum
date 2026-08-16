@@ -2,6 +2,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpx
 import pytest
 
 from ytsum.models import AppSettings
@@ -189,6 +190,10 @@ async def test_transcribe_uses_fallback_transcript_path_and_rejects_empty_or_inc
     assert [segment.text for segment in segments] == ["hello", "there"]
 
     monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient({"state": "done"}))
+    with pytest.raises(TranscriptionBridgeError, match="completed without transcript text"):
+        await bridge.transcribe(audio_path)
+
+    monkeypatch.setattr("ytsum.transcriber.httpx.AsyncClient", lambda *args, **kwargs: FakeClient({"state": "done", "transcriptPath": str(tmp_path / "missing-transcript.txt")}))
     with pytest.raises(TranscriptionBridgeError, match="completed without transcript text"):
         await bridge.transcribe(audio_path)
 
