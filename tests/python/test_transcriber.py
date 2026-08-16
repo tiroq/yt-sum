@@ -116,7 +116,7 @@ async def test_transcribe_includes_audio_file_diagnostics_in_error(tmp_path, mon
 
     bridge = MeetingTranscriberBridge(AppSettings(meeting_transcriber_url="http://127.0.0.1:9876", meeting_transcriber_token_file=str(token_file)))
 
-    with pytest.raises(TranscriptionBridgeError, match=r"audio_path=.*exists=True.*is_file=True.*size_bytes=10.*resolved=.*parent_exists=True.*parent_is_dir=True"):
+    with pytest.raises(TranscriptionBridgeError, match=r"local_diagnostics=.*'audio_path': '.*audio-16k-mono\.wav'.*'exists': True.*'is_file': True.*'size_bytes': 10.*'parent_exists': True.*'parent_is_dir': True"):
         await bridge.transcribe(audio_path)
 
 
