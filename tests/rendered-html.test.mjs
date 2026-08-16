@@ -97,3 +97,10 @@ test("standalone prompts have their own UI flow and artifact endpoint", async ()
   assert.match(page, /Each run is independent/);
   assert.match(page, /prompt_artifacts/);
 });
+
+test("selected prompt artifacts can be dismissed from the exact result view", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /onOpen: \(artifact: PromptArtifact \| null\) => void/);
+  assert.match(page, /selected\?\.artifact\.id === artifact\.id \? null : artifact/);
+  assert.doesNotMatch(page, /secondary-button.*onClick=\{\(\) => onOpen\(null\)\}/s);
+});
