@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 import httpx
 
 from .models import AppSettings, TranscriptSegment
+
+logger = logging.getLogger(__name__)
 
 
 LINE_RE = re.compile(r"^\[(?P<time>\d{1,2}:\d{2}(?::\d{2})?)\]\s*(?:(?P<speaker>[^:]{1,60}):\s*)?(?P<text>.+)$")
@@ -63,11 +66,13 @@ class MeetingTranscriberBridge:
             return {"ready": False, "address": address, "state": "unavailable", "reason": "unreachable"}
 
     async def transcribe(self, audio_path: Path, max_wait_seconds: int = 1800) -> list[TranscriptSegment]:
+        logger.info(f"[transcribe] audio_path={audio_path}, exists={audio_path.exists()}")
         token = self._token()
         url = f"{self.settings.meeting_transcriber_url.rstrip('/')}/v1/transcribe?include=transcript"
         headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": f"yt-sum-{audio_path.stat().st_size}-{audio_path.name}"}
         async with httpx.AsyncClient(timeout=max_wait_seconds + 30) as client:
             response = await client.post(url, headers=headers, json={"path": str(audio_path.resolve()), "maxWaitSeconds": max_wait_seconds})
+        logger.info(f"[transcribe] Meeting Transcriber response: status={response.status_code}")
         if response.status_code == 202:
             raise TranscriptionBridgeError("Native transcription is still running; retry the job shortly")
         if response.status_code != 200:
