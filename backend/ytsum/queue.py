@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .captions import SubtitleChoice, parse_caption_file, transcript_markdown
 from .downloader import YouTubeClient
@@ -212,13 +212,14 @@ class ProcessingQueue:
             if current_task:
                 self._job_tasks[job.id] = current_task
             try:
+                self._log(job, f"[WORKER:{worker_name}] Picked up job: kind={job.kind}, video_id={job.video_id}, source={job.source_url}")
                 await self._execute(job)
             except asyncio.CancelledError:
                 if self._stopping:
                     raise
                 self.storage.update_job(job.id, status="cancelled", execution_state="cancelled", error="Cancelled by user")
                 self.storage.finish_workflow(job.id, "cancelled")
-                self._log(job, "Cancelled by user")
+                self._log(job, "[WORKER] Cancelled by user")
                 self._event(job, "cancelled", "Cancelled by user", "failed")
             finally:
                 self._job_tasks.pop(job.id, None)
@@ -294,12 +295,14 @@ class ProcessingQueue:
 
     async def _execute(self, job: JobRecord) -> None:
         workflow = self.storage.get_workflow(job.workflow_id) if job.workflow_id else None
+        self._log(job, f"[EXECUTE] Loading settings: workflow_id={job.workflow_id}, has_workflow={workflow is not None}")
         settings = (
             AppSettings.model_validate(workflow.settings_snapshot)
             if workflow and workflow.settings_snapshot
             else self.settings_repo.load()
         )
         if job.kind in {"summarize", "prompt"}:
+            self._log(job, "[EXECUTE] Refreshing settings from current config for summarize/prompt job")
             current = self.settings_repo.load()
             settings = settings.model_copy(update={
                 "providers": current.providers,
@@ -308,14 +311,17 @@ class ProcessingQueue:
             })
         work_dir = self.storage.work_dir / job.id
         work_dir.mkdir(parents=True, exist_ok=True)
+        self._log(job, f"[EXECUTE] Work directory created: {work_dir}")
         try:
             self._event(job, "starting", f"Starting {job.kind} job", "started")
-            self._log(job, f"Starting {job.kind} job for {job.video_id}")
+            self._log(job, f"[EXECUTE] Starting {job.kind} job for {job.video_id}, attempts={job.attempts}")
             acquisition_job = job.kind in {"process", "refresh"}
             if acquisition_job:
+                self._log(job, "[EXECUTE] Processing acquisition job (process/refresh)")
                 await self._prepare_transcript(job, settings, work_dir)
             self._check_cancelled(job)
             if acquisition_job:
+                self._log(job, "[EXECUTE] Acquisition complete, marking for summary")
                 self.storage.update_job(
                     job.id,
                     status="complete",
@@ -334,10 +340,13 @@ class ProcessingQueue:
                 self.notify()
                 return
             if job.kind == "tts":
+                self._log(job, "[EXECUTE] Routing to TTS job")
                 await self._create_speech(job, settings)
             elif job.kind == "prompt":
+                self._log(job, "[EXECUTE] Routing to prompt artifact job")
                 await self._create_prompt_artifact(job, settings)
             else:
+                self._log(job, "[EXECUTE] Routing to summary job")
                 await self._create_summary(job, settings)
             self.storage.update_job(
                 job.id, status="complete", stage=job.stage, execution_state="succeeded", progress=1, error=None
@@ -352,9 +361,16 @@ class ProcessingQueue:
             self.storage.finish_workflow(job.id, "cancelled")
             self._log(job, str(error))
             self._event(job, "cancelled", str(error), "failed")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - Intentional broad catch for error logging with context
+            self._log(job, f"[ERROR] Job failed with exception: type={type(error).__name__}, message={error}")
+            import traceback
+            tb_lines = traceback.format_exc().split('\n')
+            for line in tb_lines[-5:]:  # Log last 5 lines of traceback for context
+                if line.strip():
+                    self._log(job, f"[ERROR_TRACEBACK] {line}")
             parent_stage = {"summarize": "summarizing", "prompt": "running-prompt"}.get(job.kind)
             if parent_stage:
+                self._log(job, f"[ERROR] Transitioning stage {parent_stage} to failed")
                 self.storage.transition_stage(
                     job.id,
                     parent_stage,
@@ -370,9 +386,11 @@ class ProcessingQueue:
                 error=str(error),
                 attempts=job.attempts + 1,
             )
+            self._log(job, f"[ERROR] Job updated with status=attention, attempts={job.attempts + 1}")
             self.storage.finish_workflow(job.id, "attention")
             detail = self.storage.get_video(job.video_id)
             if detail and detail.folder:
+                self._log(job, f"[ERROR] Saving error state to meta: status={'partially_ready' if detail.transcript_markdown.strip() else 'attention'}")
                 detail.meta.status = "partially_ready" if detail.transcript_markdown.strip() else "attention"
                 detail.meta.error = str(error)
                 self.storage.save_meta(detail.meta, Path(detail.folder))
@@ -386,9 +404,10 @@ class ProcessingQueue:
     async def _prepare_transcript(
         self, job: JobRecord, settings: AppSettings, work_dir: Path
     ) -> None:
+        self._log(job, f"[TRANSCRIPT] Starting transcript preparation: kind={job.kind}")
         checkpoint = self.storage.get_video(job.video_id)
         if job.kind == "process" and checkpoint and checkpoint.transcript_markdown.strip():
-            self._log(job, "Verified transcript checkpoint found; YouTube acquisition skipped")
+            self._log(job, "[TRANSCRIPT] Verified transcript checkpoint found; YouTube acquisition skipped")
             self.storage.transition_stage(
                 job.id,
                 "transcript-ready",
@@ -397,8 +416,10 @@ class ProcessingQueue:
                 message="Existing transcript checkpoint verified",
             )
             return
+        self._log(job, "[TRANSCRIPT] Creating YouTubeClient")
         client = YouTubeClient(settings)
         await self._wait_until_resumed()
+        self._log(job, f"[TRANSCRIPT] Fetching metadata from {job.source_url}")
         async with self.resources.stage(
             job,
             "metadata",
@@ -408,15 +429,18 @@ class ProcessingQueue:
         ):
             self._event(job, "metadata", f"Fetching metadata from {job.source_url}", "progress")
             extracted = await self._thread_call(client.extract, job.source_url)
+        self._log(job, f"[TRANSCRIPT] Metadata fetch completed: video_id={extracted.video_id}")
         languages = ", ".join(extracted.available_languages) if extracted.available_languages else "none reported"
         duration = f"{extracted.duration_seconds}s" if extracted.duration_seconds is not None else "unknown duration"
-        self._log(job, f"Metadata extracted: title={extracted.title!r}; channel={extracted.channel or 'unknown'}; duration={duration}; languages={languages}")
+        self._log(job, f"[TRANSCRIPT] Metadata extracted: title={extracted.title!r}; channel={extracted.channel or 'unknown'}; duration={duration}; languages={languages}")
         self._event(job, "metadata", f"Metadata received: {extracted.title} · {extracted.channel or 'unknown channel'} · {duration}", "completed")
         self._event(job, "metadata", f"Subtitle languages reported: {languages}", "progress")
         self._check_cancelled(job)
+        self._log(job, "[TRANSCRIPT] Checking for previous metadata")
         previous = self.storage.read_meta(job.video_id)
         existing = self.storage.get_video(job.video_id)
         previous_meta = previous[0] if previous else (existing.meta if existing else None)
+        self._log(job, f"[TRANSCRIPT] Previous meta found: {previous_meta is not None}")
         meta = VideoMeta(
             video_id=extracted.video_id,
             source_url=extracted.url,
@@ -437,30 +461,38 @@ class ProcessingQueue:
             added_at=previous_meta.added_at if previous_meta else utc_now(),
             available_languages=extracted.available_languages,
         )
+        self._log(job, "[TRANSCRIPT] Creating video folder")
         folder = self.storage.create_video_folder(meta)
         self.storage.save_meta(meta, folder)
+        self._log(job, f"[TRANSCRIPT] Video folder created and meta saved: {folder}")
 
         await self._wait_until_resumed()
+        self._log(job, "[TRANSCRIPT] Starting thumbnail download")
         self._stage(job, "thumbnail", 0.14)
         thumbnail = await self._thread_call(client.cache_thumbnail, extracted, folder)
         if thumbnail:
+            self._log(job, f"[TRANSCRIPT] Thumbnail saved: {thumbnail.name}")
             meta.thumbnail_file = thumbnail.name
             self.storage.save_meta(meta, folder)
             self._event(job, "thumbnail", f"Preview saved: {thumbnail.name}", "completed")
         else:
+            self._log(job, "[TRANSCRIPT] Thumbnail unavailable")
             self._event(job, "thumbnail", "Preview unavailable; continuing without local thumbnail", "progress")
         self._complete_stage(job, "thumbnail", 0.18, "Thumbnail branch completed")
 
         await self._wait_until_resumed()
+        self._log(job, "[TRANSCRIPT] Selecting original transcript")
         self._stage(job, "transcript-selection", 0.22)
         original_choice = client.choose_original_transcript(extracted)
+        self._log(job, f"[TRANSCRIPT] Original transcript choice: {original_choice.language if original_choice else 'None (will use ASR fallback)'}")
         self._complete_stage(job, "transcript-selection", 0.24, "Transcript candidates selected")
         if original_choice:
+            self._log(job, f"[TRANSCRIPT] Downloading caption transcript: language={original_choice.language}")
             original = await self._save_caption_transcript(job, client, extracted, original_choice, "original", meta, folder, work_dir)
         else:
             self._log(
                 job,
-                "No usable YouTube transcript; switching to local audio transcription",
+                "[TRANSCRIPT] No usable YouTube transcript; switching to local audio transcription (ASR fallback)",
             )
             await self._wait_until_resumed()
             async with self.resources.stage(
@@ -470,12 +502,13 @@ class ProcessingQueue:
                 progress=0.30,
                 message="Downloading audio fallback",
             ):
-                self._log(job, "Starting audio download to fallback path")
+                self._log(job, f"[TRANSCRIPT_ASR] Starting audio download to fallback path: {work_dir}")
                 audio_path = await self._thread_call(client.download_audio, extracted, work_dir)
-                self._log(job, f"Audio download completed: {audio_path}")
-                self._log(job, f"Audio file details: exists={audio_path.exists()}, size={audio_path.stat().st_size if audio_path.exists() else 'N/A'} bytes, readable={audio_path.is_file() if audio_path.exists() else False}")
+                self._log(job, f"[TRANSCRIPT_ASR] Audio download completed: {audio_path}")
+                self._log(job, f"[TRANSCRIPT_ASR] Audio file details: exists={audio_path.exists()}, size={audio_path.stat().st_size if audio_path.exists() else 'N/A'} bytes, readable={audio_path.is_file() if audio_path.exists() else False}")
             self._check_cancelled(job)
             await self._wait_until_resumed()
+            self._log(job, f"[TRANSCRIPT_ASR] Initializing Meeting Transcriber with engine={settings.asr_engine}")
             async with self.resources.stage(
                 job,
                 "transcribing",
@@ -483,30 +516,35 @@ class ProcessingQueue:
                 progress=0.50,
                 message="Transcribing audio with Meeting Transcriber",
             ):
-                self._log(job, f"Sending audio to Meeting Transcriber: {audio_path}")
+                self._log(job, f"[TRANSCRIPT_ASR] Sending audio to Meeting Transcriber: {audio_path}")
                 segments = await MeetingTranscriberBridge(settings).transcribe(audio_path)
-                self._log(job, f"Meeting Transcriber returned {len(segments)} segments")
-            self._log(job, f"Transcribed {len(segments)} segments")
+                self._log(job, f"[TRANSCRIPT_ASR] Meeting Transcriber returned {len(segments)} segments")
+            self._log(job, f"[TRANSCRIPT_ASR] Transcribed {len(segments)} segments, language will be {settings.asr_language or extracted.original_language or 'auto'}")
             self._stage(job, "transcript-normalize", 0.60)
             original = self._write_transcript(meta, folder, "original", settings.asr_language or extracted.original_language or "auto", "local_asr", "local_asr", settings.asr_engine, segments)
+            self._log(job, f"[TRANSCRIPT_ASR] ASR transcript written: {original.file}")
             self._complete_stage(job, "transcript-normalize", 0.64, "ASR transcript normalized")
             if settings.keep_audio:
+                self._log(job, "[TRANSCRIPT_ASR] Keeping audio file per settings")
                 shutil.copy2(audio_path, folder / "audio.wav")
 
         if not original:
             raise RuntimeError("Transcript is empty")
+        self._log(job, f"[TRANSCRIPT] Primary transcript set: {original.language}/{original.kind}/{original.source}")
         meta.transcript = original
         settings_choice = client.choose_transcript(extracted)
         if settings_choice and settings_choice.language != original.language:
+            self._log(job, f"[TRANSCRIPT] Downloading alternate language transcript: {settings_choice.language}")
             localized = await self._save_caption_transcript(job, client, extracted, settings_choice, "settings", meta, folder, work_dir)
             if localized:
-                self._log(job, f"Settings-language transcript saved: {localized.language}/{localized.kind}")
+                self._log(job, f"[TRANSCRIPT] Settings-language transcript saved: {localized.language}/{localized.kind}")
         elif settings_choice:
-            self._log(job, "Settings-language transcript matches the original; no duplicate file created")
+            self._log(job, f"[TRANSCRIPT] Settings-language transcript matches the original ({settings_choice.language}); no duplicate file created")
         meta.status = "transcript_ready"
         meta.error = None
         self.storage.save_meta(meta, folder)
         self.storage.update_search(meta.video_id)
+        self._log(job, "[TRANSCRIPT] Transcript preparation complete")
         self._stage(job, "transcript-ready", 0.68)
         self._complete_stage(job, "transcript-ready", 1, "Transcript artifact committed")
 
@@ -557,11 +595,15 @@ class ProcessingQueue:
         return info
 
     async def _create_summary(self, job: JobRecord, settings: AppSettings) -> None:
+        self._log(job, "[SUMMARY] Starting summary creation")
         detail = self.storage.get_video(job.video_id)
         if not detail or not detail.folder or not detail.transcript_markdown:
             raise RuntimeError("Transcript is not ready")
+        self._log(job, f"[SUMMARY] Transcript ready: length={len(detail.transcript_markdown)} chars")
         overrides = job.overrides
+        self._log(job, f"[SUMMARY] Processing overrides: {overrides}")
         provider_id = overrides.get("provider_id") or settings.active_provider_id
+        self._log(job, f"[SUMMARY] Selected provider_id: {provider_id}")
         primary_provider = next(
             (item for item in settings.providers if item.id == provider_id), None
         )
@@ -570,12 +612,15 @@ class ProcessingQueue:
         if not primary_provider.enabled:
             raise RuntimeError(f"Summary provider '{provider_id}' is disabled")
         if overrides.get("model"):
+            self._log(job, f"[SUMMARY] Overriding model to {overrides['model']}")
             primary_provider = primary_provider.model_copy(update={"model": overrides["model"]})
         if not primary_provider.model:
             raise RuntimeError("Choose a summary model in Settings")
         providers = [primary_provider]
         if settings.parallel_summary_sources and not overrides.get("provider_id") and not overrides.get("model"):
+            self._log(job, "[SUMMARY] Parallel summaries enabled, using all providers")
             providers = [item for item in settings.providers if item.enabled and item.model]
+        self._log(job, f"[SUMMARY] Providers selected: {len(providers)} providers")
         if not providers:
             raise RuntimeError("Enable at least one configured summary source")
         template_id = overrides.get("template_id") or settings.summary_template_id
@@ -584,8 +629,10 @@ class ProcessingQueue:
         )
         if not template:
             raise RuntimeError(f"Summary template '{template_id}' not found")
+        self._log(job, f"[SUMMARY] Template selected: {template.id}")
         language = overrides.get("language") or settings.summary_language
         mode = overrides.get("mode") or settings.summary_mode
+        self._log(job, f"[SUMMARY] Language={language}, Mode={mode}")
         self._stage(job, "summarizing", 0.72)
         source_label = ", ".join(f"{item.name}/{item.model}" for item in providers)
         job.summary_source = "transcript.md"
@@ -600,7 +647,7 @@ class ProcessingQueue:
             model=job.model,
         )
         self._event(job, "summary-source", f"Source: {job.summary_source}; provider/model: {source_label}", "started")
-        self._log(job, f"Starting summary across {source_label} ({mode})")
+        self._log(job, f"[SUMMARY] Starting summary across {source_label} ({mode})")
 
         def report(progress: SummaryProgress) -> None:
             job.stage = progress.stage
@@ -638,18 +685,22 @@ class ProcessingQueue:
             )
             self._event(job, progress.stage, progress.message, progress.status)
 
+        self._log(job, f"[SUMMARY] Running Summarizer with {len(providers)} provider(s)")
         result = await Summarizer(settings, providers, template, pause_waiter=self._wait_until_resumed).run(
             detail.transcript_markdown, language=language, model=primary_provider.model, mode=mode, on_progress=report
         )
+        self._log(job, f"[SUMMARY] Summarizer completed: {result.request_count} request(s), output_length={len(result.markdown)} chars")
         folder = Path(detail.folder)
         history_dir = folder / "summary-history"
         history_dir.mkdir(exist_ok=True)
         if (folder / "summary.md").exists() and detail.meta.current_summary:
+            self._log(job, "[SUMMARY] Previous summary exists, archiving to history")
             previous = detail.meta.current_summary
             history_name = f"{safe_component(previous.generated_at)}-{safe_component(previous.model)}-{safe_component(previous.template_id)}.md"
             shutil.copy2(folder / "summary.md", history_dir / history_name)
             previous.file = f"summary-history/{history_name}"
             detail.meta.summary_versions.append(previous)
+        self._log(job, "[SUMMARY] Writing summary to disk")
         atomic_write(folder / "summary.md", result.markdown)
         detail.meta.current_summary = SummaryVersion(
             file="summary.md",
@@ -666,32 +717,37 @@ class ProcessingQueue:
         self.storage.update_search(job.video_id)
         self._log(
             job,
-            f"Summary created across {source_label} in {result.request_count} request(s)",
+            f"[SUMMARY] Summary created across {source_label} in {result.request_count} request(s)",
         )
         self._complete_stage(job, "summarizing", 1, "Summary artifact committed")
 
     async def _create_prompt_artifact(self, job: JobRecord, settings: AppSettings) -> None:
         """Run one reusable prompt without replacing the canonical summary."""
+        self._log(job, "[PROMPT] Starting prompt artifact creation")
         detail = self.storage.get_video(job.video_id)
         if not detail or not detail.folder or not detail.transcript_markdown:
             raise RuntimeError("Transcript is not ready")
         template_id = job.overrides.get("template_id")
+        self._log(job, f"[PROMPT] Template ID from overrides: {template_id}")
         template = next((item for item in settings.templates if item.id == template_id), None)
         if not template:
             raise RuntimeError(f"Prompt template '{template_id}' not found")
         provider_id = job.overrides.get("provider_id") or settings.active_provider_id
+        self._log(job, f"[PROMPT] Provider ID: {provider_id}")
         provider = next((item for item in settings.providers if item.id == provider_id), None)
         if not provider:
             raise RuntimeError(f"Summary provider '{provider_id}' not found")
         if not provider.enabled:
             raise RuntimeError(f"Summary provider '{provider_id}' is disabled")
         if job.overrides.get("model"):
+            self._log(job, f"[PROMPT] Overriding model to {job.overrides['model']}")
             provider = provider.model_copy(update={"model": job.overrides["model"]})
         if not provider.model:
             raise RuntimeError("Choose a summary model in Settings")
         language = job.overrides.get("language") or settings.summary_language
+        self._log(job, f"[PROMPT] Language: {language}")
         self._stage(job, "running-prompt", 0.72)
-        self._log(job, f"Running prompt '{template.id}' with {provider.name}/{provider.model}")
+        self._log(job, f"[PROMPT] Running prompt '{template.id}' with {provider.name}/{provider.model}")
 
         def report(progress: SummaryProgress) -> None:
             job.stage = progress.stage
@@ -716,13 +772,16 @@ class ProcessingQueue:
             )
             self._event(job, progress.stage, progress.message, progress.status)
 
+        self._log(job, "[PROMPT] Running Summarizer with prompt template")
         result = await Summarizer(settings, [provider], template, pause_waiter=self._wait_until_resumed).run(
             detail.transcript_markdown, language=language, model=provider.model, mode="cluster", on_progress=report
         )
+        self._log(job, f"[PROMPT] Summarizer completed: output_length={len(result.markdown)} chars")
         folder = Path(detail.folder)
         relative_file = f"artifacts/{safe_component(template.id)}-{safe_component(job.id)}.md"
         artifact_path = folder / relative_file
         artifact_path.parent.mkdir(exist_ok=True)
+        self._log(job, f"[PROMPT] Writing artifact to {relative_file}")
         atomic_write(artifact_path, result.markdown)
         detail.meta.prompt_artifacts.insert(0, PromptArtifact(
             id=job.id, file=relative_file, template_id=template.id,
@@ -732,24 +791,29 @@ class ProcessingQueue:
         detail.meta.error = None
         self.storage.save_meta(detail.meta, folder)
         self.storage.update_search(job.video_id)
-        self._log(job, f"Prompt artifact written: {relative_file}")
+        self._log(job, f"[PROMPT] Prompt artifact written: {relative_file}")
         self._complete_stage(job, "running-prompt", 1, "Prompt artifact committed")
 
     async def _create_speech(self, job: JobRecord, settings: AppSettings) -> None:
+        self._log(job, "[TTS] Starting speech synthesis")
         detail = self.storage.get_video(job.video_id)
         if not detail or not detail.folder:
             raise RuntimeError("Video folder is not ready")
         artifact = job.overrides.get("artifact")
+        self._log(job, f"[TTS] Artifact type: {artifact}")
         if artifact not in {"transcript", "summary"}:
             raise RuntimeError("Choose a transcript or summary to narrate")
         source = detail.transcript_markdown if artifact == "transcript" else detail.summary_markdown
+        self._log(job, f"[TTS] Source length: {len(source)} chars")
         speech = markdown_to_speech(source)
         if not speech:
             raise RuntimeError(f"{artifact.capitalize()} is not ready")
-        self._log(job, f"Synthesizing {artifact} with {settings.tts_engine}/{settings.tts_voice or 'system default'}")
+        self._log(job, f"[TTS] Speech text prepared: {len(speech)} chars")
+        self._log(job, f"[TTS] TTS engine: {settings.tts_engine}, voice: {settings.tts_voice or 'system default'}")
         filename = f"{artifact}-speech.m4a"
         output = Path(detail.folder) / filename
         await self._wait_until_resumed()
+        self._log(job, f"[TTS] Starting synthesis, output: {filename}")
         async with self.resources.stage(
             job,
             "speech-synthesis",
@@ -758,10 +822,11 @@ class ProcessingQueue:
             message=f"Synthesizing {artifact}",
         ):
             await self._thread_call(MacSayTTS(settings).synthesize, speech, output)
+        self._log(job, "[TTS] Synthesis completed")
         self._check_cancelled(job)
         self._stage(job, "saving-audio", 0.9)
         detail.meta.audio_artifacts = [item for item in detail.meta.audio_artifacts if item.artifact != artifact]
         detail.meta.audio_artifacts.append(AudioArtifact(file=filename, artifact=artifact, engine=settings.tts_engine, voice=settings.tts_voice or "system", rate=settings.tts_rate))
         self.storage.save_meta(detail.meta, Path(detail.folder))
-        self._log(job, f"Speech saved: {filename}")
+        self._log(job, f"[TTS] Speech saved: {filename}")
         self._complete_stage(job, "saving-audio", 1, "Audio artifact committed")
