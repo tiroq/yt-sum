@@ -218,6 +218,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .feature-hints svg { color: #4f9873; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(8,24,19,.48); backdrop-filter: blur(6px); }
+.queue-backdrop { position: fixed; inset: 0; z-index: 45; background: rgba(8,24,19,.12); backdrop-filter: blur(2px); }
 .modal { width: min(590px, 100%); background: var(--paper); border: 1px solid rgba(255,255,255,.6); border-radius: 22px; padding: 28px; box-shadow: 0 30px 90px rgba(5,20,15,.32); }
 .modal-heading, .page-heading, .settings-card-title, .provider-top, .queue-heading, .queue-item-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .modal h2, .queue-heading h2 { margin: 4px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 25px; font-weight: 600; }
@@ -228,7 +229,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modal-note { display: flex; gap: 8px; align-items: center; margin-top: 11px; color: #86611e; background: var(--amber-soft); border-radius: 9px; padding: 9px 11px; font-size: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
 
-.queue-panel { position: fixed; z-index: 45; right: 16px; top: 75px; bottom: 16px; width: min(390px, calc(100vw - 32px)); display: flex; flex-direction: column; padding: 20px; background: rgba(255,254,250,.97); border: 1px solid var(--line); border-radius: 19px; box-shadow: var(--shadow); backdrop-filter: blur(18px); }
+.queue-panel { position: fixed; z-index: 46; right: 16px; top: 75px; bottom: 16px; width: min(390px, calc(100vw - 32px)); display: flex; flex-direction: column; padding: 20px; background: rgba(255,254,250,.97); border: 1px solid var(--line); border-radius: 19px; box-shadow: var(--shadow); backdrop-filter: blur(18px); }
 .queue-heading { padding-bottom: 15px; border-bottom: 1px solid var(--line-soft); }
 .queue-heading h2 { font-size: 21px; }
 .queue-heading-actions { display: flex; align-items: center; gap: 8px; }

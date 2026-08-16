@@ -15,3 +15,8 @@ test("add-video dialog returns focus to its opener so it can be opened again", (
   assert.match(page, /addDialogTriggerRef\.current\?\.focus\(\)/);
   assert.match(page, /onClick=\{openAddDialog\}/);
 });
+
+test("queue panel closes when clicking outside its panel", () => {
+  assert.match(page, /queue-backdrop.*onClick=\{close\}/s);
+  assert.match(page, /queue-panel[^\n]*onClick=\{\(event\) => event\.stopPropagation\(\)\}/s);
+});
