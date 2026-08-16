@@ -230,13 +230,24 @@ class YouTubeClient:
     def download_audio(self, video: ExtractedVideo, work_dir: Path) -> Path:
         work_dir.mkdir(parents=True, exist_ok=True)
         options = self._base_options(bool(self.settings.cookie_file or self.settings.cookie_browser))
-        options.update({"format": "bestaudio/best", "outtmpl": str(work_dir / "source.%(ext)s"), "noplaylist": True})
+        options.update({
+            "format": "bestaudio/best",
+            "outtmpl": str(work_dir / "source.%(ext)s"),
+            "noplaylist": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "192",
+                }
+            ],
+        })
         try:
             with yt_dlp.YoutubeDL(options) as downloader:
                 downloader.download([video.url])
         except yt_dlp.utils.DownloadError as error:
             raise DownloadFailure(str(error)) from error
-        source = next((path for path in work_dir.glob("source.*") if path.suffix != ".part"), None)
+        source = next((path for path in work_dir.glob("source.wav") if path.suffix != ".part"), None)
         if not source:
             raise DownloadFailure("yt-dlp did not produce an audio file")
         wav_path = work_dir / "audio-16k-mono.wav"
