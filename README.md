@@ -2,27 +2,33 @@
 
 ![YT Sum — local-first YouTube transcript and AI summary library](public/images/yt-sum-readme-hero.png)
 
-YT Sum is a local-first macOS app for turning YouTube videos into readable transcripts, summaries, and reusable notes.
+<p>
+  <img src="https://img.shields.io/badge/macOS-14.2%2B-111827?style=for-the-badge&logo=apple&logoColor=white" alt="macOS 14.2+">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Node-22.13%2B-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node 22.13+">
+  <img src="https://img.shields.io/badge/Local--first-6B8F6A?style=for-the-badge" alt="Local-first">
+  <img src="https://img.shields.io/badge/Loopback--only-4B5563?style=for-the-badge" alt="Loopback only">
+</p>
 
-It is built for people who want to keep the workflow on their own Mac:
+YT Sum is a local-first macOS app for turning YouTube videos into transcripts, summaries, and a portable knowledge library. It keeps the workflow on your Mac, uses conservative YouTube access, and supports both local and OpenAI-compatible models.
 
-- add one video, many URLs, or a full playlist
-- fetch the best available transcript with conservative request pacing
-- fall back to audio transcription when subtitles are missing
-- summarize with local or OpenAI-compatible models
-- store everything in a portable folder of Markdown and JSON files
+## What You Get
 
-## Why it exists
+- import one URL, many URLs, or a full playlist
+- fetch the best transcript available, then fall back to audio transcription when needed
+- keep transcript, summary, thumbnail, metadata, and processing history per video
+- queue videos from YouTube with the browser extension
+- inspect queues, resources, providers, and system state in diagnostics
 
-YouTube is a good source of information, but long videos are hard to search, compare, and reuse. YT Sum makes them into a local library you can browse, reprocess, and keep under your control.
+## Why Use It
 
-## What you get
+- your content stays in a local folder of Markdown and JSON files
+- playlist refreshes do not create duplicate jobs
+- the app is built for long videos, repeated reference, and reprocessing
 
-- loopback-only web app and API for macOS
-- transcript, summary, thumbnail, metadata, and processing history for each video
-- playlist imports without duplicate jobs
-- browser extension for one-click queueing from YouTube
-- diagnostics for queues, resources, providers, and system state
+## Preview
+
+![Library, transcript, and diagnostics in one view](public/images/yt-sum-readme-gallery.png)
 
 ## Quick start
 
