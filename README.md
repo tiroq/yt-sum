@@ -1,6 +1,10 @@
 # YT Sum
 
-Local-first YouTube transcript and summary library for macOS.
+![YT Sum — local-first YouTube transcript and AI summary library](public/images/yt-sum-readme-hero.png)
+
+**Local-first YouTube transcript and AI summary library for macOS.** Import videos and playlists, keep readable transcripts and artifacts on disk, and process them with your own local or OpenAI-compatible language models.
+
+> Bring your own models. Keep your library local. Turn long videos into useful knowledge.
 
 ## Quick start
 
