@@ -142,10 +142,10 @@ class SummaryTemplate(BaseModel):
 class AppSettings(BaseModel):
     schema_version: int = 1
     library_dir: str = "~/Documents/YouTube Summaries"
-    interface_language: Literal["ru", "en"] = "ru"
-    primary_language: str = "ru"
-    secondary_language: str = "en"
-    summary_language: str = "ru"
+    interface_language: Literal["ru", "en"] = "en"
+    primary_language: str = "en"
+    secondary_language: str = "ru"
+    summary_language: str = "en"
     allow_any_language: bool = True
     min_download_delay_seconds: int = Field(default=30, ge=0, le=3600)
     max_download_delay_seconds: int = Field(default=90, ge=0, le=3600)
