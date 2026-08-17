@@ -7,6 +7,7 @@ name = "yt-sum"
 version = "0.1.0"
 description = "Local-first YouTube transcript and summarization library"
 requires-python = ">=3.11"
+license = {file = "LICENSE"}
 dependencies = [
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
