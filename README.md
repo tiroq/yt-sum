@@ -28,7 +28,22 @@ YT Sum is a local-first macOS app for turning YouTube videos into transcripts, s
 
 ## Preview
 
-![Library, transcript, and diagnostics in one view](public/images/yt-sum-readme-gallery.png)
+<table>
+  <tr>
+    <td align="center">
+      <img src="public/images/yt-sum-readme-add.png" alt="Add to library" width="100%">
+      <br><sub>Add to library</sub>
+    </td>
+    <td align="center">
+      <img src="public/images/yt-sum-readme-summary.png" alt="Summary progress" width="100%">
+      <br><sub>Summary progress</sub>
+    </td>
+    <td align="center">
+      <img src="public/images/yt-sum-readme-transcript.png" alt="Full transcript" width="100%">
+      <br><sub>Full transcript</sub>
+    </td>
+  </tr>
+</table>
 
 ## Quick start
 
