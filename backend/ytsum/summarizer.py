@@ -73,6 +73,7 @@ class MultiProviderScheduler:
     still enforce their own RPM limit; a busy/limited endpoint is skipped while
     other endpoints receive the next available request.
     """
+
     _shared: dict[tuple[tuple[str, str, str], ...], "MultiProviderScheduler"] = {}
     _shared_lock = asyncio.Lock()
 
@@ -84,18 +85,23 @@ class MultiProviderScheduler:
 
     @classmethod
     def shared(cls, providers: list[ProviderSettings]) -> "MultiProviderScheduler":
-        key = tuple(sorted((
-            provider.id,
-            provider.base_url,
-            provider.model,
-            provider.requests_per_minute,
-            provider.requests_per_hour,
-            provider.requests_per_day,
-            provider.tokens_per_minute,
-            provider.tokens_per_hour,
-            provider.tokens_per_day,
-            provider.max_in_flight,
-        ) for provider in providers))
+        key = tuple(
+            sorted(
+                (
+                    provider.id,
+                    provider.base_url,
+                    provider.model,
+                    provider.requests_per_minute,
+                    provider.requests_per_hour,
+                    provider.requests_per_day,
+                    provider.tokens_per_minute,
+                    provider.tokens_per_hour,
+                    provider.tokens_per_day,
+                    provider.max_in_flight,
+                )
+                for provider in providers
+            )
+        )
         scheduler = cls._shared.get(key)
         if scheduler is None:
             scheduler = cls(providers)
@@ -103,27 +109,50 @@ class MultiProviderScheduler:
         return scheduler
 
     @staticmethod
-    def _request_windows_open(provider: ProviderSettings, availability: dict[str, int | float | bool], pending: int) -> bool:
+    def _request_windows_open(
+        provider: ProviderSettings,
+        availability: dict[str, int | float | bool],
+        pending: int,
+    ) -> bool:
         windows = (
-            (provider.requests_per_minute or 0, int(availability.get("requests_in_window", 0))),
+            (
+                provider.requests_per_minute or 0,
+                int(availability.get("requests_in_window", 0)),
+            ),
             (provider.requests_per_hour, int(availability.get("requests_in_hour", 0))),
             (provider.requests_per_day, int(availability.get("requests_in_day", 0))),
         )
-        return all(not limit or pending < max(0, limit - used) for limit, used in windows)
+        return all(
+            not limit or pending < max(0, limit - used) for limit, used in windows
+        )
 
     @staticmethod
-    def _token_windows_open(provider: ProviderSettings, availability: dict[str, int | float | bool], pending_tokens: int, estimated_tokens: int) -> bool:
+    def _token_windows_open(
+        provider: ProviderSettings,
+        availability: dict[str, int | float | bool],
+        pending_tokens: int,
+        estimated_tokens: int,
+    ) -> bool:
         windows = (
             (provider.tokens_per_minute, int(availability.get("tokens_in_window", 0))),
             (provider.tokens_per_hour, int(availability.get("tokens_in_hour", 0))),
             (provider.tokens_per_day, int(availability.get("tokens_in_day", 0))),
         )
-        return all(not limit or pending_tokens + estimated_tokens <= max(0, limit - used) for limit, used in windows)
+        return all(
+            not limit or pending_tokens + estimated_tokens <= max(0, limit - used)
+            for limit, used in windows
+        )
 
-    async def _pick_source(self, excluded: set[str], estimated_tokens: int) -> tuple[int, ProviderSettings, ProviderClient] | None:
+    async def _pick_source(
+        self, excluded: set[str], estimated_tokens: int
+    ) -> tuple[int, ProviderSettings, ProviderClient] | None:
         while True:
             async with self._lock:
-                candidates = [index for index, (provider, _) in enumerate(self.sources) if provider.id not in excluded]
+                candidates = [
+                    index
+                    for index, (provider, _) in enumerate(self.sources)
+                    if provider.id not in excluded
+                ]
                 if not candidates:
                     return None
 
@@ -136,34 +165,57 @@ class MultiProviderScheduler:
                     pending = self._loads[index]
                     pending_tokens = self._token_loads[index]
                     capacity_open = pending < int(availability["capacity_available"])
-                    rpm_open = self._request_windows_open(provider, availability, pending)
-                    tpm_open = self._token_windows_open(provider, availability, pending_tokens, estimated_tokens)
+                    rpm_open = self._request_windows_open(
+                        provider, availability, pending
+                    )
+                    tpm_open = self._token_windows_open(
+                        provider, availability, pending_tokens, estimated_tokens
+                    )
                     if availability["token_limit_exceeded"]:
                         token_blocked += 1
-                    if availability["available"] and capacity_open and rpm_open and tpm_open:
+                    if (
+                        availability["available"]
+                        and capacity_open
+                        and rpm_open
+                        and tpm_open
+                    ):
                         ready.append((index, int(availability["in_flight"])))
                     else:
-                        retry_after.append(float(availability["retry_after_seconds"] or 0.1))
+                        retry_after.append(
+                            float(availability["retry_after_seconds"] or 0.1)
+                        )
 
                 if ready:
-                    index = min(ready, key=lambda item: (self._loads[item[0]], item[1], item[0]))[0]
+                    index = min(
+                        ready, key=lambda item: (self._loads[item[0]], item[1], item[0])
+                    )[0]
                     provider, client = self.sources[index]
                     self._loads[index] += 1
                     self._token_loads[index] += estimated_tokens
                     return index, provider, client
                 if token_blocked == len(candidates):
-                    raise ProviderError(f"Estimated request uses {estimated_tokens} tokens, above all configured TPM limits")
+                    raise ProviderError(
+                        f"Estimated request uses {estimated_tokens} tokens, above all configured TPM limits"
+                    )
                 delay = min(retry_after) if retry_after else 0.1
             await asyncio.sleep(min(max(delay, 0.1), 1.0))
 
     async def chat(self, *, system: str, user: str) -> tuple[str, ProviderSettings]:
-        estimated_tokens = max(estimate_chat_tokens(system, user, provider.max_output_tokens) for provider, _ in self.sources)
+        estimated_tokens = max(
+            estimate_chat_tokens(system, user, provider.max_output_tokens)
+            for provider, _ in self.sources
+        )
         excluded: set[str] = set()
         failures: list[str] = []
         while source := await self._pick_source(excluded, estimated_tokens):
             index, provider, client = source
             try:
-                return await client.chat(system=system, user=user, model=provider.model, estimated_tokens=estimated_tokens), provider
+                return await client.chat(
+                    system=system,
+                    user=user,
+                    model=provider.model,
+                    estimated_tokens=estimated_tokens,
+                ), provider
             except ProviderError as error:
                 # A single offline source must not fail an otherwise healthy
                 # multi-source job. Retry this request on each remaining one.
@@ -172,12 +224,22 @@ class MultiProviderScheduler:
             finally:
                 async with self._lock:
                     self._loads[index] = max(0, self._loads[index] - 1)
-                    self._token_loads[index] = max(0, self._token_loads[index] - estimated_tokens)
-        raise ProviderError("All configured summary sources failed: " + "; ".join(failures))
+                    self._token_loads[index] = max(
+                        0, self._token_loads[index] - estimated_tokens
+                    )
+        raise ProviderError(
+            "All configured summary sources failed: " + "; ".join(failures)
+        )
 
 
 class Summarizer:
-    def __init__(self, settings: AppSettings, providers: list[ProviderSettings], template: SummaryTemplate, pause_waiter=None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        providers: list[ProviderSettings],
+        template: SummaryTemplate,
+        pause_waiter=None,
+    ) -> None:
         self.settings = settings
         if not providers:
             raise ValueError("At least one summary provider is required")
@@ -189,20 +251,38 @@ class Summarizer:
         self.on_progress: Callable[[SummaryProgress], None] | None = None
         self.pause_waiter = pause_waiter
 
-    async def run(self, transcript_markdown: str, *, language: str, model: str, mode: str, on_progress: Callable[[SummaryProgress], None] | None = None) -> SummaryResult:
+    async def run(
+        self,
+        transcript_markdown: str,
+        *,
+        language: str,
+        model: str,
+        mode: str,
+        on_progress: Callable[[SummaryProgress], None] | None = None,
+    ) -> SummaryResult:
         self.on_progress = on_progress
         source = strip_frontmatter(transcript_markdown)
         if mode == "cluster":
             self.requests_planned = 1
             self._emit("summary-plan", "Planned 1 final summary request", "started")
-            self._emit("summary-source", "Selecting representative transcript passages", "started")
+            self._emit(
+                "summary-source",
+                "Selecting representative transcript passages",
+                "started",
+            )
             source = await self._representative_source(source)
-            self._emit("summary-source", "Representative transcript passages selected", "completed")
+            self._emit(
+                "summary-source",
+                "Representative transcript passages selected",
+                "completed",
+            )
             body = await self._final_summary(source, language, model, lossy=True)
         else:
             chunks = split_text(source, self.settings.chunk_characters)
             self.requests_planned = (len(chunks) + 1) if len(chunks) > 1 else 1
-            self._emit("summary-plan", f"Planned {self.requests_planned} request(s)", "started")
+            self._emit(
+                "summary-plan", f"Planned {self.requests_planned} request(s)", "started"
+            )
             body = await self._map_reduce(source, language, model)
         generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         frontmatter = (
@@ -215,11 +295,35 @@ class Summarizer:
             f"generated_at: {generated_at}\n"
             "---\n\n"
         )
-        return SummaryResult(markdown=frontmatter + body.strip() + "\n", request_count=self.requests, provider_ids=[provider.id for provider in self.providers], models=[provider.model for provider in self.providers])
+        return SummaryResult(
+            markdown=frontmatter + body.strip() + "\n",
+            request_count=self.requests,
+            provider_ids=[provider.id for provider in self.providers],
+            models=[provider.model for provider in self.providers],
+        )
 
-    def _emit(self, stage: str, message: str, status: str = "progress", provider: ProviderSettings | None = None, operation_id: str | None = None) -> None:
+    def _emit(
+        self,
+        stage: str,
+        message: str,
+        status: str = "progress",
+        provider: ProviderSettings | None = None,
+        operation_id: str | None = None,
+    ) -> None:
         if self.on_progress:
-            self.on_progress(SummaryProgress(stage, message, status, self.requests_planned, self.requests, provider.id if provider else None, provider.name if provider else None, provider.model if provider else None, operation_id))
+            self.on_progress(
+                SummaryProgress(
+                    stage,
+                    message,
+                    status,
+                    self.requests_planned,
+                    self.requests,
+                    provider.id if provider else None,
+                    provider.name if provider else None,
+                    provider.model if provider else None,
+                    operation_id,
+                )
+            )
 
     async def _map_reduce(self, source: str, language: str, model: str) -> str:
         chunks = split_text(source, self.settings.chunk_characters)
@@ -242,9 +346,13 @@ class Summarizer:
 
         level = mapped
         while len("\n\n".join(level)) > self.settings.chunk_characters:
-            groups = split_text("\n\n---\n\n".join(level), self.settings.chunk_characters, overlap=0)
+            groups = split_text(
+                "\n\n---\n\n".join(level), self.settings.chunk_characters, overlap=0
+            )
             self.requests_planned += len(groups)
-            self._emit("summary-plan", f"Added {len(groups)} merge request(s) to the plan")
+            self._emit(
+                "summary-plan", f"Added {len(groups)} merge request(s) to the plan"
+            )
             reduce_prompts = [
                 f"Merge these intermediate notes in {language}. Remove duplication but preserve all distinct facts and timestamp links.\n\n{group}"
                 for group in groups
@@ -288,14 +396,27 @@ class Summarizer:
                     queue.task_done()
 
         capacity = max(1, sum(provider.max_in_flight for provider in self.providers))
-        workers = [asyncio.create_task(worker()) for _ in range(min(len(prompts), capacity))]
+        workers = [
+            asyncio.create_task(worker()) for _ in range(min(len(prompts), capacity))
+        ]
         await asyncio.gather(*workers)
         return results
 
-    async def _final_summary(self, source: str, language: str, model: str, lossy: bool = False) -> str:
+    async def _final_summary(
+        self, source: str, language: str, model: str, lossy: bool = False
+    ) -> str:
         instruction = self.template.prompt.format(language=language)
-        warning = "The input is a representative sample; explicitly avoid implying exhaustive coverage.\n" if lossy else ""
-        return await self._chat(f"{instruction}\n{warning}\nSOURCE:\n{source}", model, "summary-final", "Creating final summary")
+        warning = (
+            "The input is a representative sample; explicitly avoid implying exhaustive coverage.\n"
+            if lossy
+            else ""
+        )
+        return await self._chat(
+            f"{instruction}\n{warning}\nSOURCE:\n{source}",
+            model,
+            "summary-final",
+            "Creating final summary",
+        )
 
     async def _chat(self, prompt: str, model: str, stage: str, message: str) -> str:
         if self.pause_waiter:
@@ -304,9 +425,13 @@ class Summarizer:
         operation_id = f"request-{self.requests}"
         self._emit(stage, message, "started", operation_id=operation_id)
         try:
-            response, provider = await self.scheduler.chat(system=SYSTEM_PROMPT, user=prompt)
+            response, provider = await self.scheduler.chat(
+                system=SYSTEM_PROMPT, user=prompt
+            )
         except Exception as error:
-            self._emit(stage, f"{message} failed: {error}", "failed", operation_id=operation_id)
+            self._emit(
+                stage, f"{message} failed: {error}", "failed", operation_id=operation_id
+            )
             raise
         self._emit(stage, f"{message} completed", "completed", provider, operation_id)
         return response
@@ -329,9 +454,17 @@ class Summarizer:
             )
             logger.error("[cluster] optional dependency missing: %s", error)
             raise RuntimeError(message) from error
-        model = SentenceTransformer(self.settings.embedding_model, device=self.settings.embedding_device)
-        logger.info("[cluster] loading embedding model %s on device=%s", self.settings.embedding_model, self.settings.embedding_device)
-        vectors = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
+        model = SentenceTransformer(
+            self.settings.embedding_model, device=self.settings.embedding_device
+        )
+        logger.info(
+            "[cluster] loading embedding model %s on device=%s",
+            self.settings.embedding_model,
+            self.settings.embedding_device,
+        )
+        vectors = model.encode(
+            chunks, normalize_embeddings=True, show_progress_bar=False
+        )
         count = min(self.settings.cluster_count, len(chunks))
         kmeans = KMeans(n_clusters=count, random_state=42, n_init="auto").fit(vectors)
         selected: set[int] = set()

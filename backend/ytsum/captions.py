@@ -9,7 +9,9 @@ from typing import Any, Iterable
 from .models import TranscriptSegment
 
 
-TIMESTAMP_RE = re.compile(r"(?P<start>\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3})\s+-->\s+(?P<end>\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3})")
+TIMESTAMP_RE = re.compile(
+    r"(?P<start>\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3})\s+-->\s+(?P<end>\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3})"
+)
 TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -46,14 +48,17 @@ def matching_key(available: dict[str, Any], wanted: str) -> str | None:
     selectable = [
         key
         for key in available
-        if _selectable_language_key(key) != "live-chat" and language_matches(key, wanted)
+        if _selectable_language_key(key) != "live-chat"
+        and language_matches(key, wanted)
     ]
     if not selectable:
         return None
     return min(selectable, key=lambda key: _language_choice_priority(key, wanted))
 
 
-def _iter_selectable_entries(available: dict[str, list[dict[str, Any]]]) -> list[tuple[str, list[dict[str, Any]]]]:
+def _iter_selectable_entries(
+    available: dict[str, list[dict[str, Any]]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
     return [
         (language, entries)
         for language, entries in available.items()
@@ -146,7 +151,13 @@ def parse_caption_text(content: str) -> list[TranscriptSegment]:
             index += 1
         text = clean_caption_text(text_lines)
         if text:
-            segments.append(TranscriptSegment(start=parse_timestamp(match.group("start")), end=parse_timestamp(match.group("end")), text=text))
+            segments.append(
+                TranscriptSegment(
+                    start=parse_timestamp(match.group("start")),
+                    end=parse_timestamp(match.group("end")),
+                    text=text,
+                )
+            )
         index += 1
     return merge_rolling_captions(segments)
 
@@ -155,7 +166,9 @@ def parse_caption_file(path: Path) -> list[TranscriptSegment]:
     return parse_caption_text(path.read_text(encoding="utf-8", errors="replace"))
 
 
-def merge_rolling_captions(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+def merge_rolling_captions(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
     """Remove repeated leading words from rolling captions without changing cue times.
 
     YouTube's automatic captions commonly repeat the tail of one cue at the
@@ -170,7 +183,9 @@ def merge_rolling_captions(segments: list[TranscriptSegment]) -> list[Transcript
         overlap = _rolling_overlap(previous_words, words) if previous_words else 0
         remaining_words = words[overlap:]
         if remaining_words:
-            normalized.append(segment.model_copy(update={"text": " ".join(remaining_words)}))
+            normalized.append(
+                segment.model_copy(update={"text": " ".join(remaining_words)})
+            )
         # Compare the next cue against the complete source cue, not the
         # shortened text above: rolling captions advance one word at a time.
         previous_words = words
@@ -200,8 +215,21 @@ def format_timestamp(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
 
-def transcript_markdown(*, video_id: str, title: str, language: str, kind: str, engine: str | None, segments: list[TranscriptSegment]) -> str:
-    frontmatter = ["---", f"video_id: {video_id}", f"language: {language}", f"transcript_kind: {kind}"]
+def transcript_markdown(
+    *,
+    video_id: str,
+    title: str,
+    language: str,
+    kind: str,
+    engine: str | None,
+    segments: list[TranscriptSegment],
+) -> str:
+    frontmatter = [
+        "---",
+        f"video_id: {video_id}",
+        f"language: {language}",
+        f"transcript_kind: {kind}",
+    ]
     if engine:
         frontmatter.append(f"engine: {engine}")
     frontmatter.extend(["---", "", f"# {title} — Transcript", ""])
@@ -209,7 +237,9 @@ def transcript_markdown(*, video_id: str, title: str, language: str, kind: str, 
     body: list[str] = []
     for segment in segments:
         speaker = f"**{segment.speaker}:** " if segment.speaker else ""
-        body.append(f"[{format_timestamp(segment.start)}]({base_url}&t={int(segment.start)}s) {speaker}{segment.text}")
+        body.append(
+            f"[{format_timestamp(segment.start)}]({base_url}&t={int(segment.start)}s) {speaker}{segment.text}"
+        )
     return "\n".join(frontmatter + body).rstrip() + "\n"
 
 

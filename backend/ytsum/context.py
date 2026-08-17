@@ -25,7 +25,10 @@ class ApplicationContext:
         current = self.settings_repo.load()
         old_summary_signature = self._summary_signature(current)
         saved = self.settings_repo.save(settings)
-        if Path(current.library_dir).expanduser().resolve() != Path(saved.library_dir).expanduser().resolve():
+        if (
+            Path(current.library_dir).expanduser().resolve()
+            != Path(saved.library_dir).expanduser().resolve()
+        ):
             with self._lock:
                 self._storage = LibraryStorage(Path(saved.library_dir))
                 self._storage.rescan()
@@ -36,19 +39,30 @@ class ApplicationContext:
 
     @staticmethod
     def _summary_signature(settings: AppSettings) -> tuple:
-        providers = tuple((
-            item.id,
-            item.base_url,
-            item.model,
-            item.enabled,
-            item.requests_per_minute,
-            item.requests_per_hour,
-            item.requests_per_day,
-            item.tokens_per_minute,
-            item.tokens_per_hour,
-            item.tokens_per_day,
-            item.max_in_flight,
-            item.temperature,
-            item.max_output_tokens,
-        ) for item in settings.providers)
-        return (settings.active_provider_id, settings.parallel_summary_sources, settings.summary_language, settings.summary_mode, settings.summary_template_id, settings.chunk_characters, providers)
+        providers = tuple(
+            (
+                item.id,
+                item.base_url,
+                item.model,
+                item.enabled,
+                item.requests_per_minute,
+                item.requests_per_hour,
+                item.requests_per_day,
+                item.tokens_per_minute,
+                item.tokens_per_hour,
+                item.tokens_per_day,
+                item.max_in_flight,
+                item.temperature,
+                item.max_output_tokens,
+            )
+            for item in settings.providers
+        )
+        return (
+            settings.active_provider_id,
+            settings.parallel_summary_sources,
+            settings.summary_language,
+            settings.summary_mode,
+            settings.summary_template_id,
+            settings.chunk_characters,
+            providers,
+        )

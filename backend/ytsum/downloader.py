@@ -58,7 +58,9 @@ def normalize_playlist_url(value: str) -> tuple[str, str]:
     parsed = urlparse(value)
     host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
     playlist_id = parse_qs(parsed.query).get("list", [""])[0]
-    if host not in {"youtube.com", "music.youtube.com"} or not PLAYLIST_ID_RE.fullmatch(playlist_id):
+    if host not in {"youtube.com", "music.youtube.com"} or not PLAYLIST_ID_RE.fullmatch(
+        playlist_id
+    ):
         raise ValueError(f"Unsupported or invalid YouTube playlist URL: {value}")
     return playlist_id, f"https://www.youtube.com/playlist?list={playlist_id}"
 
@@ -118,18 +120,20 @@ class YouTubeClient:
             "sleep_interval": self.settings.min_download_delay_seconds,
             "max_sleep_interval": self.settings.max_download_delay_seconds,
             "retry_sleep_functions": {
-                "http": lambda attempt: min(300, 10 * (2 ** attempt)),
-                "extractor": lambda attempt: min(300, 10 * (2 ** attempt)),
+                "http": lambda attempt: min(300, 10 * (2**attempt)),
+                "extractor": lambda attempt: min(300, 10 * (2**attempt)),
             },
             # Handle age-gated and regional content
             "socket_timeout": 60,
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            }
+            },
         }
         if use_cookies:
             if self.settings.cookie_file:
-                options["cookiefile"] = str(Path(self.settings.cookie_file).expanduser())
+                options["cookiefile"] = str(
+                    Path(self.settings.cookie_file).expanduser()
+                )
             elif self.settings.cookie_browser:
                 options["cookiesfrombrowser"] = (self.settings.cookie_browser,)
         return options
@@ -139,9 +143,15 @@ class YouTubeClient:
         if info is None and (self.settings.cookie_file or self.settings.cookie_browser):
             info = self._extract_once(url, use_cookies=True)
         if info is None:
-            raise DownloadFailure("yt-dlp could not read this video, with or without configured cookies")
+            raise DownloadFailure(
+                "yt-dlp could not read this video, with or without configured cookies"
+            )
         upload_date = info.get("upload_date")
-        published_at = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}" if upload_date and len(upload_date) >= 8 else None
+        published_at = (
+            f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+            if upload_date and len(upload_date) >= 8
+            else None
+        )
         return ExtractedVideo(
             video_id=info["id"],
             url=info.get("webpage_url") or url,
@@ -157,8 +167,16 @@ class YouTubeClient:
 
     def extract_playlist(self, url: str) -> ExtractedPlaylist:
         playlist_id, canonical_url = normalize_playlist_url(url)
-        options = self._base_options(bool(self.settings.cookie_file or self.settings.cookie_browser))
-        options.update({"noplaylist": False, "extract_flat": "discard_in_playlist", "skip_download": True})
+        options = self._base_options(
+            bool(self.settings.cookie_file or self.settings.cookie_browser)
+        )
+        options.update(
+            {
+                "noplaylist": False,
+                "extract_flat": "discard_in_playlist",
+                "skip_download": True,
+            }
+        )
         try:
             with yt_dlp.YoutubeDL(options) as downloader:
                 info = downloader.extract_info(canonical_url, download=False)
@@ -175,9 +193,21 @@ class YouTubeClient:
             if not VIDEO_ID_RE.fullmatch(video_id) or video_id in seen:
                 continue
             seen.add(video_id)
-            entries.append(PlaylistEntry(video_id=video_id, source_url=f"https://www.youtube.com/watch?v={video_id}", position=position))
+            entries.append(
+                PlaylistEntry(
+                    video_id=video_id,
+                    source_url=f"https://www.youtube.com/watch?v={video_id}",
+                    position=position,
+                )
+            )
         return ExtractedPlaylist(
-            meta=PlaylistMeta(id=playlist_id, title=info.get("title") or f"YouTube playlist {playlist_id}", source_url=canonical_url, channel=info.get("channel") or info.get("uploader") or "", video_count=len(entries)),
+            meta=PlaylistMeta(
+                id=playlist_id,
+                title=info.get("title") or f"YouTube playlist {playlist_id}",
+                source_url=canonical_url,
+                channel=info.get("channel") or info.get("uploader") or "",
+                video_count=len(entries),
+            ),
             entries=entries,
         )
 
@@ -200,12 +230,16 @@ class YouTubeClient:
             self.settings.allow_any_language,
         )
 
-    def choose_original_transcript(self, video: ExtractedVideo) -> SubtitleChoice | None:
+    def choose_original_transcript(
+        self, video: ExtractedVideo
+    ) -> SubtitleChoice | None:
         return select_original_subtitle(
             video.subtitles, video.automatic_captions, video.original_language
         )
 
-    def download_subtitle(self, video: ExtractedVideo, choice: SubtitleChoice, work_dir: Path) -> Path:
+    def download_subtitle(
+        self, video: ExtractedVideo, choice: SubtitleChoice, work_dir: Path
+    ) -> Path:
         work_dir.mkdir(parents=True, exist_ok=True)
         is_automatic = choice.language not in video.subtitles
         options = self._base_options(False)
@@ -234,7 +268,9 @@ class YouTubeClient:
                 raise DownloadFailure(str(error)) from error
         candidates = sorted(work_dir.glob("subtitle*.*"))
         if not candidates:
-            raise DownloadFailure(f"yt-dlp reported success but did not save {choice.language} subtitles")
+            raise DownloadFailure(
+                f"yt-dlp reported success but did not save {choice.language} subtitles"
+            )
         return candidates[0]
 
     def download_audio(self, video: ExtractedVideo, work_dir: Path) -> Path:
@@ -242,7 +278,9 @@ class YouTubeClient:
 
         clean_url = f"https://www.youtube.com/watch?v={video.video_id}"
         logger.info(f"Downloading audio for video {video.video_id}: {clean_url}")
-        logger.info(f"Audio download work directory: {work_dir} (exists={work_dir.exists()}, is_dir={work_dir.is_dir()})")
+        logger.info(
+            f"Audio download work directory: {work_dir} (exists={work_dir.exists()}, is_dir={work_dir.is_dir()})"
+        )
         try:
             logger.info(f"Testing work directory write permissions...")
             test_file = work_dir / ".write-test"
@@ -256,8 +294,17 @@ class YouTubeClient:
         final_wav = work_dir / "audio-16k-mono.wav"
         source_prefix = work_dir / f"raw-audio-{uuid.uuid4().hex}"
         temp_converted = work_dir / f"converted-{uuid.uuid4().hex}.wav"
-        logger.info(f"Audio paths: final_wav={final_wav.name}, source_prefix={source_prefix.name}, temp_converted={temp_converted.name}")
-        for candidate in [*work_dir.glob("source.*"), *work_dir.glob("download-source.*"), *work_dir.glob("download-converted.*"), *work_dir.glob("raw-audio-*.wav"), *work_dir.glob("raw-audio-*.*"), final_wav]:
+        logger.info(
+            f"Audio paths: final_wav={final_wav.name}, source_prefix={source_prefix.name}, temp_converted={temp_converted.name}"
+        )
+        for candidate in [
+            *work_dir.glob("source.*"),
+            *work_dir.glob("download-source.*"),
+            *work_dir.glob("download-converted.*"),
+            *work_dir.glob("raw-audio-*.wav"),
+            *work_dir.glob("raw-audio-*.*"),
+            final_wav,
+        ]:
             if candidate.is_file():
                 candidate.unlink(missing_ok=True)
 
@@ -300,43 +347,92 @@ class YouTubeClient:
 
                 source_candidates = sorted(
                     path
-                    for pattern in (f"{source_prefix.name}.*", "source.*", "download-source.*")
+                    for pattern in (
+                        f"{source_prefix.name}.*",
+                        "source.*",
+                        "download-source.*",
+                    )
                     for path in work_dir.glob(pattern)
-                    if path.is_file() and not path.name.endswith(".part") and path.name != final_wav.name
+                    if path.is_file()
+                    and not path.name.endswith(".part")
+                    and path.name != final_wav.name
                 )
                 source = next(iter(source_candidates), None)
                 if source:
-                    logger.info(f"✓ Successfully downloaded audio using format: {format_spec}")
-                    logger.info(f"Source file: {source} (size={source.stat().st_size} bytes, readable={source.is_file()})")
+                    logger.info(
+                        f"✓ Successfully downloaded audio using format: {format_spec}"
+                    )
+                    logger.info(
+                        f"Source file: {source} (size={source.stat().st_size} bytes, readable={source.is_file()})"
+                    )
                     if temp_converted.exists():
                         temp_converted.unlink(missing_ok=True)
-                    logger.info(f"Running ffmpeg: source={source}, output={temp_converted}")
+                    logger.info(
+                        f"Running ffmpeg: source={source}, output={temp_converted}"
+                    )
                     result = subprocess.run(
-                        ["ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(temp_converted)],
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-i",
+                            str(source),
+                            "-vn",
+                            "-ac",
+                            "1",
+                            "-ar",
+                            "16000",
+                            "-c:a",
+                            "pcm_s16le",
+                            str(temp_converted),
+                        ],
                         capture_output=True,
                         text=True,
                         check=False,
                     )
                     if result.returncode != 0:
-                        error_msg = result.stderr[-2000:] or "ffmpeg audio conversion failed"
-                        logger.error(f"✗ ffmpeg failed with return code {result.returncode}: {error_msg}")
+                        error_msg = (
+                            result.stderr[-2000:] or "ffmpeg audio conversion failed"
+                        )
+                        logger.error(
+                            f"✗ ffmpeg failed with return code {result.returncode}: {error_msg}"
+                        )
                         raise DownloadFailure(error_msg)
-                    logger.info(f"ffmpeg conversion completed with return code {result.returncode}")
+                    logger.info(
+                        f"ffmpeg conversion completed with return code {result.returncode}"
+                    )
                     if not temp_converted.exists():
-                        raise DownloadFailure("ffmpeg reported success but did not produce the converted WAV output")
-                    logger.info(f"Converted WAV created: {temp_converted} (size={temp_converted.stat().st_size} bytes)")
+                        raise DownloadFailure(
+                            "ffmpeg reported success but did not produce the converted WAV output"
+                        )
+                    logger.info(
+                        f"Converted WAV created: {temp_converted} (size={temp_converted.stat().st_size} bytes)"
+                    )
                     if final_wav.exists():
                         logger.info(f"Removing existing final WAV: {final_wav}")
                         final_wav.unlink(missing_ok=True)
-                    logger.info(f"Atomically replacing final WAV from temp: {temp_converted} -> {final_wav}")
+                    logger.info(
+                        f"Atomically replacing final WAV from temp: {temp_converted} -> {final_wav}"
+                    )
                     temp_converted.replace(final_wav)
-                    logger.info(f"✓ Audio converted to 16kHz mono WAV for video {video.video_id}")
-                    logger.info(f"Final WAV location: {final_wav} (size={final_wav.stat().st_size} bytes, exists={final_wav.exists()})")
+                    logger.info(
+                        f"✓ Audio converted to 16kHz mono WAV for video {video.video_id}"
+                    )
+                    logger.info(
+                        f"Final WAV location: {final_wav} (size={final_wav.stat().st_size} bytes, exists={final_wav.exists()})"
+                    )
                     return final_wav
 
-                logger.warning(f"✗ No WAV file produced with format {format_spec}, trying next")
+                logger.warning(
+                    f"✗ No WAV file produced with format {format_spec}, trying next"
+                )
                 last_error = "yt-dlp did not produce an audio file"
-                for f in [*work_dir.glob("source.*"), *work_dir.glob("download-source.*"), *work_dir.glob("download-converted.*"), *work_dir.glob(f"{source_prefix.name}.*"), *work_dir.glob("raw-audio-*.*")]:
+                for f in [
+                    *work_dir.glob("source.*"),
+                    *work_dir.glob("download-source.*"),
+                    *work_dir.glob("download-converted.*"),
+                    *work_dir.glob(f"{source_prefix.name}.*"),
+                    *work_dir.glob("raw-audio-*.*"),
+                ]:
                     f.unlink(missing_ok=True)
                 continue
 
@@ -344,14 +440,20 @@ class YouTubeClient:
                 error_msg = str(error)
                 logger.warning(f"✗ Format {format_spec} failed: {error_msg[:200]}")
                 last_error = error_msg
-                for f in list(work_dir.glob("download-source.*")) + [tmp for tmp in work_dir.glob("download-converted.*")]:
+                for f in list(work_dir.glob("download-source.*")) + [
+                    tmp for tmp in work_dir.glob("download-converted.*")
+                ]:
                     f.unlink(missing_ok=True)
                 continue
             except Exception as error:
                 error_msg = str(error)
-                logger.warning(f"✗ Unexpected error with format {format_spec}: {error_msg[:200]}")
+                logger.warning(
+                    f"✗ Unexpected error with format {format_spec}: {error_msg[:200]}"
+                )
                 last_error = error_msg
-                for f in list(work_dir.glob("download-source.*")) + [tmp for tmp in work_dir.glob("download-converted.*")]:
+                for f in list(work_dir.glob("download-source.*")) + [
+                    tmp for tmp in work_dir.glob("download-converted.*")
+                ]:
                     f.unlink(missing_ok=True)
                 continue
 
@@ -363,13 +465,20 @@ class YouTubeClient:
         if not video.thumbnail_url:
             return None
         if self.settings.min_download_delay_seconds:
-            time.sleep(random.uniform(self.settings.min_download_delay_seconds, self.settings.max_download_delay_seconds))
+            time.sleep(
+                random.uniform(
+                    self.settings.min_download_delay_seconds,
+                    self.settings.max_download_delay_seconds,
+                )
+            )
         try:
             response = httpx.get(video.thumbnail_url, timeout=60, follow_redirects=True)
             response.raise_for_status()
         except httpx.HTTPError:
             return None
-        suffix = ".webp" if "webp" in response.headers.get("content-type", "") else ".jpg"
+        suffix = (
+            ".webp" if "webp" in response.headers.get("content-type", "") else ".jpg"
+        )
         destination = folder / f"thumbnail{suffix}"
         destination.write_bytes(response.content)
         return destination

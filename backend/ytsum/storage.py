@@ -204,13 +204,23 @@ class LibraryStorage:
         with self._connect() as connection:
             for statement in statements:
                 connection.execute(statement)
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(videos)")}
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(videos)")
+            }
             if "archived" not in columns:
-                connection.execute("ALTER TABLE videos ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-            connection.execute("CREATE INDEX IF NOT EXISTS idx_videos_archived_updated ON videos(archived, updated_at)")
+                connection.execute(
+                    "ALTER TABLE videos ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_videos_archived_updated ON videos(archived, updated_at)"
+            )
             if "playlists_json" not in columns:
-                connection.execute("ALTER TABLE videos ADD COLUMN playlists_json TEXT NOT NULL DEFAULT '[]'")
-            existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+                connection.execute(
+                    "ALTER TABLE videos ADD COLUMN playlists_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            existing_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(jobs)")
+            }
             migrations = {
                 "stage_log_json": "TEXT NOT NULL DEFAULT '[]'",
                 "requests_planned": "INTEGER NOT NULL DEFAULT 0",
@@ -226,7 +236,9 @@ class LibraryStorage:
             }
             for column, definition in migrations.items():
                 if column not in existing_columns:
-                    connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+                    connection.execute(
+                        f"ALTER TABLE jobs ADD COLUMN {column} {definition}"
+                    )
             connection.execute(
                 "UPDATE jobs SET status='queued', execution_state='queued', waiting_for_json=NULL "
                 "WHERE status='processing'"
@@ -296,16 +308,29 @@ class LibraryStorage:
 
     def _migrate_legacy_jobs(self, connection: sqlite3.Connection) -> None:
         """Create durable workflow records for jobs from the compatibility schema."""
-        rows = connection.execute("SELECT * FROM jobs WHERE workflow_id='' OR workflow_id IS NULL").fetchall()
+        rows = connection.execute(
+            "SELECT * FROM jobs WHERE workflow_id='' OR workflow_id IS NULL"
+        ).fetchall()
         for row in rows:
             workflow_id = str(uuid.uuid4())
             now = row["updated_at"] or utc_now()
-            status = "waiting" if row["status"] == "queued" else self._workflow_status(row["status"])
+            status = (
+                "waiting"
+                if row["status"] == "queued"
+                else self._workflow_status(row["status"])
+            )
             connection.execute(
                 """INSERT OR IGNORE INTO workflows(
                     id, video_id, kind, status, priority, settings_snapshot_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, 'normal', '{}', ?, ?)""",
-                (workflow_id, row["video_id"], row["kind"], status, row["created_at"], now),
+                (
+                    workflow_id,
+                    row["video_id"],
+                    row["kind"],
+                    status,
+                    row["created_at"],
+                    now,
+                ),
             )
             state = self._execution_state(row["status"])
             connection.execute(
@@ -351,7 +376,9 @@ class LibraryStorage:
             "cancelled": "stopped",
         }.get(status, "waiting")
 
-    def create_placeholder(self, video_id: str, source_url: str, playlists: list[PlaylistRef] | None = None) -> None:
+    def create_placeholder(
+        self, video_id: str, source_url: str, playlists: list[PlaylistRef] | None = None
+    ) -> None:
         now = utc_now()
         with self._connect() as connection:
             connection.execute(
@@ -360,26 +387,70 @@ class LibraryStorage:
                 VALUES (?, ?, ?, 'queued', ?, ?, ?)
                 ON CONFLICT(video_id) DO NOTHING
                 """,
-                (video_id, source_url, "Ожидает метаданные", json.dumps([item.model_dump(mode="json") for item in playlists or []], ensure_ascii=False), now, now),
+                (
+                    video_id,
+                    source_url,
+                    "Ожидает метаданные",
+                    json.dumps(
+                        [item.model_dump(mode="json") for item in playlists or []],
+                        ensure_ascii=False,
+                    ),
+                    now,
+                    now,
+                ),
             )
 
-    def import_playlist(self, playlist: PlaylistMeta, entries: list[tuple[str, str, int]]) -> tuple[list[JobRecord], list[str]]:
+    def import_playlist(
+        self, playlist: PlaylistMeta, entries: list[tuple[str, str, int]]
+    ) -> tuple[list[JobRecord], list[str]]:
         """Import every distinct playlist entry while retaining playlist membership."""
         jobs: list[JobRecord] = []
         existing: list[str] = []
         now = utc_now()
         with self._connect() as connection:
-            next_position = connection.execute("SELECT COALESCE(MAX(position), 0) FROM jobs WHERE status='queued'").fetchone()[0]
+            next_position = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) FROM jobs WHERE status='queued'"
+            ).fetchone()[0]
             for video_id, source_url, position in entries:
-                ref = PlaylistRef(id=playlist.id, title=playlist.title, source_url=playlist.source_url, position=position)
-                row = connection.execute("SELECT playlists_json FROM videos WHERE video_id=?", (video_id,)).fetchone()
+                ref = PlaylistRef(
+                    id=playlist.id,
+                    title=playlist.title,
+                    source_url=playlist.source_url,
+                    position=position,
+                )
+                row = connection.execute(
+                    "SELECT playlists_json FROM videos WHERE video_id=?", (video_id,)
+                ).fetchone()
                 if row:
-                    refs = [PlaylistRef.model_validate(value) for value in json.loads(row["playlists_json"] or "[]")]
+                    refs = [
+                        PlaylistRef.model_validate(value)
+                        for value in json.loads(row["playlists_json"] or "[]")
+                    ]
                     refs = [item for item in refs if item.id != playlist.id] + [ref]
-                    connection.execute("UPDATE videos SET playlists_json=?, updated_at=? WHERE video_id=?", (json.dumps([item.model_dump(mode="json") for item in refs], ensure_ascii=False), now, video_id))
+                    connection.execute(
+                        "UPDATE videos SET playlists_json=?, updated_at=? WHERE video_id=?",
+                        (
+                            json.dumps(
+                                [item.model_dump(mode="json") for item in refs],
+                                ensure_ascii=False,
+                            ),
+                            now,
+                            video_id,
+                        ),
+                    )
                     existing.append(video_id)
                     continue
-                connection.execute("INSERT INTO videos(video_id, source_url, title, status, playlists_json, added_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)", (video_id, source_url, "Ожидает метаданные", json.dumps([ref.model_dump(mode="json")], ensure_ascii=False), now, now))
+                connection.execute(
+                    "INSERT INTO videos(video_id, source_url, title, status, playlists_json, added_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+                    (
+                        video_id,
+                        source_url,
+                        "Ожидает метаданные",
+                        json.dumps([ref.model_dump(mode="json")], ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
                 next_position += 1
                 workflow_id = str(uuid.uuid4())
                 job = JobRecord(
@@ -398,30 +469,49 @@ class LibraryStorage:
     def list_playlists(self) -> list[dict[str, Any]]:
         playlists: dict[str, dict[str, Any]] = {}
         with self._connect() as connection:
-            rows = connection.execute("SELECT video_id, playlists_json FROM videos").fetchall()
+            rows = connection.execute(
+                "SELECT video_id, playlists_json FROM videos"
+            ).fetchall()
         for row in rows:
             for payload in json.loads(row["playlists_json"] or "[]"):
                 ref = PlaylistRef.model_validate(payload)
-                item = playlists.setdefault(ref.id, {**ref.model_dump(mode="json"), "video_count": 0, "video_ids": []})
+                item = playlists.setdefault(
+                    ref.id,
+                    {**ref.model_dump(mode="json"), "video_count": 0, "video_ids": []},
+                )
                 item["video_count"] += 1
                 item["video_ids"].append(row["video_id"])
         return sorted(playlists.values(), key=lambda item: item["title"].casefold())
 
     def video_exists(self, video_id: str) -> bool:
         with self._connect() as connection:
-            return connection.execute("SELECT 1 FROM videos WHERE video_id=?", (video_id,)).fetchone() is not None
+            return (
+                connection.execute(
+                    "SELECT 1 FROM videos WHERE video_id=?", (video_id,)
+                ).fetchone()
+                is not None
+            )
 
     def create_video_folder(self, meta: VideoMeta) -> Path:
         existing = self.find_video_folder(meta.video_id)
-        desired = self.library_dir / safe_folder_name(meta.title, meta.published_at, meta.video_id)
-        if existing and existing != desired and existing.exists() and not desired.exists():
+        desired = self.library_dir / safe_folder_name(
+            meta.title, meta.published_at, meta.video_id
+        )
+        if (
+            existing
+            and existing != desired
+            and existing.exists()
+            and not desired.exists()
+        ):
             existing.rename(desired)
         desired.mkdir(parents=True, exist_ok=True)
         return desired
 
     def find_video_folder(self, video_id: str) -> Path | None:
         with self._connect() as connection:
-            row = connection.execute("SELECT folder FROM videos WHERE video_id=?", (video_id,)).fetchone()
+            row = connection.execute(
+                "SELECT folder FROM videos WHERE video_id=?", (video_id,)
+            ).fetchone()
         if row and row["folder"]:
             path = Path(row["folder"])
             if path.exists():
@@ -440,13 +530,19 @@ class LibraryStorage:
         # an older ``VideoMeta`` instance while they download or summarize, so
         # never let such an instance undo a later archive/restore operation.
         with self._connect() as connection:
-            row = connection.execute("SELECT archived FROM videos WHERE video_id=?", (meta.video_id,)).fetchone()
+            row = connection.execute(
+                "SELECT archived FROM videos WHERE video_id=?", (meta.video_id,)
+            ).fetchone()
         if row is not None:
             meta.archived = bool(row["archived"])
         meta.updated_at = utc_now()
         meta_path = folder / ".meta.json"
         temporary = meta_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(meta.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(meta.model_dump(mode="json"), ensure_ascii=False, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
         temporary.replace(meta_path)
         self.upsert_video(meta, folder)
 
@@ -468,14 +564,28 @@ class LibraryStorage:
                     transcript_kind=excluded.transcript_kind, playlists_json=excluded.playlists_json, updated_at=excluded.updated_at, error=excluded.error
                 """,
                 (
-                    meta.video_id, meta.source_url, meta.title, meta.channel, meta.published_at,
-                    meta.duration_seconds, meta.thumbnail_file, meta.thumbnail_url,
-                    str(folder) if folder else None, meta.status, int(meta.favorite), int(meta.archived),
+                    meta.video_id,
+                    meta.source_url,
+                    meta.title,
+                    meta.channel,
+                    meta.published_at,
+                    meta.duration_seconds,
+                    meta.thumbnail_file,
+                    meta.thumbnail_url,
+                    str(folder) if folder else None,
+                    meta.status,
+                    int(meta.favorite),
+                    int(meta.archived),
                     json.dumps(meta.tags, ensure_ascii=False),
                     meta.transcript.language if meta.transcript else None,
                     meta.transcript.kind if meta.transcript else None,
-                    json.dumps([item.model_dump(mode="json") for item in meta.playlists], ensure_ascii=False),
-                    meta.added_at, meta.updated_at, meta.error,
+                    json.dumps(
+                        [item.model_dump(mode="json") for item in meta.playlists],
+                        ensure_ascii=False,
+                    ),
+                    meta.added_at,
+                    meta.updated_at,
+                    meta.error,
                 ),
             )
         self.update_search(meta.video_id)
@@ -501,20 +611,44 @@ class LibraryStorage:
                 for filename in transcript_files
                 if (folder / filename).is_file()
             }
-            transcript = transcript_markdowns.get(meta.transcript.file if meta.transcript else "", "")
+            transcript = transcript_markdowns.get(
+                meta.transcript.file if meta.transcript else "", ""
+            )
             if not transcript:
                 transcript = next(iter(transcript_markdowns.values()), "")
-            summary = (folder / "summary.md").read_text(encoding="utf-8") if (folder / "summary.md").exists() else ""
-            artifacts = [item for item in meta.prompt_artifacts if (folder / item.file).is_file()]
-            return VideoDetail(meta=meta, transcript_markdown=transcript, transcript_markdowns=transcript_markdowns, summary_markdown=summary, prompt_artifacts=artifacts, folder=str(folder))
+            summary = (
+                (folder / "summary.md").read_text(encoding="utf-8")
+                if (folder / "summary.md").exists()
+                else ""
+            )
+            artifacts = [
+                item for item in meta.prompt_artifacts if (folder / item.file).is_file()
+            ]
+            return VideoDetail(
+                meta=meta,
+                transcript_markdown=transcript,
+                transcript_markdowns=transcript_markdowns,
+                summary_markdown=summary,
+                prompt_artifacts=artifacts,
+                folder=str(folder),
+            )
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM videos WHERE video_id=?", (video_id,)
+            ).fetchone()
         if not row:
             return None
         meta = self._row_to_meta(row)
         return VideoDetail(meta=meta)
 
-    def list_videos(self, query: str = "", status: str = "", favorite: bool | None = None, archived: bool = False, sort: str = "added_desc") -> list[dict[str, Any]]:
+    def list_videos(
+        self,
+        query: str = "",
+        status: str = "",
+        favorite: bool | None = None,
+        archived: bool = False,
+        sort: str = "added_desc",
+    ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         values: list[Any] = []
         clauses.append("archived = ?")
@@ -526,7 +660,9 @@ class LibraryStorage:
             clauses.append("favorite = ?")
             values.append(int(favorite))
         if query:
-            clauses.append("video_id IN (SELECT video_id FROM video_search WHERE video_search MATCH ?)")
+            clauses.append(
+                "video_id IN (SELECT video_id FROM video_search WHERE video_search MATCH ?)"
+            )
             values.append('"' + query.replace('"', '""') + '"*')
         order_by = {
             "added_asc": "added_at ASC",
@@ -535,16 +671,30 @@ class LibraryStorage:
         }.get(sort, "added_at DESC")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as connection:
-            rows = connection.execute(f"SELECT * FROM videos {where} ORDER BY {order_by}", values).fetchall()
-        return [self._row_to_meta(row).model_dump(mode="json") | {"folder": row["folder"]} for row in rows]
+            rows = connection.execute(
+                f"SELECT * FROM videos {where} ORDER BY {order_by}", values
+            ).fetchall()
+        return [
+            self._row_to_meta(row).model_dump(mode="json") | {"folder": row["folder"]}
+            for row in rows
+        ]
 
-    def patch_video(self, video_id: str, favorite: bool | None, tags: list[str] | None, archived: bool | None = None) -> VideoMeta | None:
+    def patch_video(
+        self,
+        video_id: str,
+        favorite: bool | None,
+        tags: list[str] | None,
+        archived: bool | None = None,
+    ) -> VideoMeta | None:
         if archived is not None:
             with self._connect() as connection:
-                exists = connection.execute(
-                    "UPDATE videos SET archived=?, updated_at=? WHERE video_id=?",
-                    (int(archived), utc_now(), video_id),
-                ).rowcount > 0
+                exists = (
+                    connection.execute(
+                        "UPDATE videos SET archived=?, updated_at=? WHERE video_id=?",
+                        (int(archived), utc_now(), video_id),
+                    ).rowcount
+                    > 0
+                )
             if not exists:
                 return None
         stored = self.read_meta(video_id)
@@ -555,7 +705,9 @@ class LibraryStorage:
         if favorite is not None:
             meta.favorite = favorite
         if tags is not None:
-            meta.tags = sorted({tag.strip() for tag in tags if tag.strip()}, key=str.casefold)
+            meta.tags = sorted(
+                {tag.strip() for tag in tags if tag.strip()}, key=str.casefold
+            )
         if archived is not None:
             meta.archived = archived
         self.save_meta(meta, folder)
@@ -569,7 +721,14 @@ class LibraryStorage:
             connection.execute("DELETE FROM video_search WHERE video_id=?", (video_id,))
             connection.execute(
                 "INSERT INTO video_search(video_id, title, channel, tags, transcript, summary) VALUES (?, ?, ?, ?, ?, ?)",
-                (video_id, detail.meta.title, detail.meta.channel, " ".join(detail.meta.tags), detail.transcript_markdown, detail.summary_markdown),
+                (
+                    video_id,
+                    detail.meta.title,
+                    detail.meta.channel,
+                    " ".join(detail.meta.tags),
+                    detail.transcript_markdown,
+                    detail.summary_markdown,
+                ),
             )
 
     def get_video_without_search(self, video_id: str) -> VideoDetail | None:
@@ -580,18 +739,40 @@ class LibraryStorage:
         transcript_files = [item.file for item in meta.transcripts if item.file]
         if not transcript_files and (folder / "transcript.md").exists():
             transcript_files = ["transcript.md"]
-        transcript_markdowns = {filename: (folder / filename).read_text(encoding="utf-8") for filename in transcript_files if (folder / filename).is_file()}
+        transcript_markdowns = {
+            filename: (folder / filename).read_text(encoding="utf-8")
+            for filename in transcript_files
+            if (folder / filename).is_file()
+        }
         summary_path = folder / "summary.md"
-        transcript = transcript_markdowns.get(meta.transcript.file if meta.transcript else "", next(iter(transcript_markdowns.values()), ""))
-        artifacts = [item for item in meta.prompt_artifacts if (folder / item.file).is_file()]
-        return VideoDetail(meta=meta, transcript_markdown=transcript, transcript_markdowns=transcript_markdowns, summary_markdown=summary_path.read_text(encoding="utf-8") if summary_path.exists() else "", prompt_artifacts=artifacts, folder=str(folder))
+        transcript = transcript_markdowns.get(
+            meta.transcript.file if meta.transcript else "",
+            next(iter(transcript_markdowns.values()), ""),
+        )
+        artifacts = [
+            item for item in meta.prompt_artifacts if (folder / item.file).is_file()
+        ]
+        return VideoDetail(
+            meta=meta,
+            transcript_markdown=transcript,
+            transcript_markdowns=transcript_markdowns,
+            summary_markdown=summary_path.read_text(encoding="utf-8")
+            if summary_path.exists()
+            else "",
+            prompt_artifacts=artifacts,
+            folder=str(folder),
+        )
 
-    def read_prompt_artifact(self, video_id: str, artifact_id: str) -> tuple[PromptArtifact, str] | None:
+    def read_prompt_artifact(
+        self, video_id: str, artifact_id: str
+    ) -> tuple[PromptArtifact, str] | None:
         stored = self.read_meta(video_id)
         if not stored:
             return None
         meta, folder = stored
-        artifact = next((item for item in meta.prompt_artifacts if item.id == artifact_id), None)
+        artifact = next(
+            (item for item in meta.prompt_artifacts if item.id == artifact_id), None
+        )
         if not artifact:
             return None
         path = folder / artifact.file
@@ -603,7 +784,9 @@ class LibraryStorage:
         live_video_ids: set[str] = set()
         for meta_path in self.library_dir.glob("*/.meta.json"):
             try:
-                meta = VideoMeta.model_validate_json(meta_path.read_text(encoding="utf-8"))
+                meta = VideoMeta.model_validate_json(
+                    meta_path.read_text(encoding="utf-8")
+                )
             except (OSError, ValueError):
                 continue
             live_video_ids.add(meta.video_id)
@@ -620,8 +803,14 @@ class LibraryStorage:
         if stale_video_ids:
             placeholders = ", ".join("?" for _ in stale_video_ids)
             with self._connect() as connection:
-                connection.execute(f"DELETE FROM video_search WHERE video_id IN ({placeholders})", stale_video_ids)
-                connection.execute(f"DELETE FROM videos WHERE video_id IN ({placeholders})", stale_video_ids)
+                connection.execute(
+                    f"DELETE FROM video_search WHERE video_id IN ({placeholders})",
+                    stale_video_ids,
+                )
+                connection.execute(
+                    f"DELETE FROM videos WHERE video_id IN ({placeholders})",
+                    stale_video_ids,
+                )
 
         return len(live_video_ids)
 
@@ -629,7 +818,9 @@ class LibraryStorage:
         count = 0
         for meta_path in self.library_dir.glob("*/.meta.json"):
             try:
-                meta = VideoMeta.model_validate_json(meta_path.read_text(encoding="utf-8"))
+                meta = VideoMeta.model_validate_json(
+                    meta_path.read_text(encoding="utf-8")
+                )
             except (OSError, ValueError):
                 continue
             if not meta.current_summary:
@@ -643,9 +834,19 @@ class LibraryStorage:
     def delete_video(self, video_id: str, delete_files: bool) -> bool:
         folder = self.find_video_folder(video_id)
         with self._connect() as connection:
-            existed = connection.execute("DELETE FROM videos WHERE video_id=?", (video_id,)).rowcount > 0
+            existed = (
+                connection.execute(
+                    "DELETE FROM videos WHERE video_id=?", (video_id,)
+                ).rowcount
+                > 0
+            )
             connection.execute("DELETE FROM video_search WHERE video_id=?", (video_id,))
-        if delete_files and folder and folder.exists() and folder.parent == self.library_dir:
+        if (
+            delete_files
+            and folder
+            and folder.exists()
+            and folder.parent == self.library_dir
+        ):
             shutil.rmtree(folder)
         return existed
 
@@ -661,7 +862,9 @@ class LibraryStorage:
         priority: str = "normal",
     ) -> JobRecord:
         with self._connect() as connection:
-            next_position = connection.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM jobs WHERE status='queued'").fetchone()[0]
+            next_position = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM jobs WHERE status='queued'"
+            ).fetchone()[0]
             job = JobRecord(
                 id=str(uuid.uuid4()),
                 workflow_id=workflow_id or str(uuid.uuid4()),
@@ -725,18 +928,26 @@ class LibraryStorage:
             self.save_meta(meta, folder)
             return meta
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM videos WHERE video_id=?", (video_id,)
+            ).fetchone()
             if not row:
                 return None
             connection.execute(
                 "UPDATE videos SET status='queued', error=NULL, updated_at=? WHERE video_id=?",
                 (utc_now(), video_id),
             )
-            row = connection.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM videos WHERE video_id=?", (video_id,)
+            ).fetchone()
         return self._row_to_meta(row) if row else None
 
     @staticmethod
-    def _insert_workflow(connection: sqlite3.Connection, job: JobRecord, settings_snapshot: dict[str, Any]) -> None:
+    def _insert_workflow(
+        connection: sqlite3.Connection,
+        job: JobRecord,
+        settings_snapshot: dict[str, Any],
+    ) -> None:
         connection.execute(
             """INSERT INTO workflows(
                 id, video_id, kind, status, priority, settings_snapshot_json, created_at, updated_at
@@ -809,7 +1020,10 @@ class LibraryStorage:
 
     def list_jobs(self, limit: int = 100) -> list[JobRecord]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM jobs ORDER BY CASE WHEN status='processing' THEN 0 WHEN status='queued' THEN 1 ELSE 2 END, position, updated_at DESC LIMIT ?", (limit,)).fetchall()
+            rows = connection.execute(
+                "SELECT * FROM jobs ORDER BY CASE WHEN status='processing' THEN 0 WHEN status='queued' THEN 1 ELSE 2 END, position, updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def next_job(self, kinds: tuple[str, ...] | None = None) -> JobRecord | None:
@@ -821,7 +1035,9 @@ class LibraryStorage:
                     kinds,
                 ).fetchone()
             else:
-                row = connection.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY position LIMIT 1").fetchone()
+                row = connection.execute(
+                    "SELECT * FROM jobs WHERE status='queued' ORDER BY position LIMIT 1"
+                ).fetchone()
             if not row:
                 return None
             connection.execute(
@@ -832,12 +1048,16 @@ class LibraryStorage:
                 "UPDATE workflows SET status='running', updated_at=? WHERE id=?",
                 (utc_now(), row["workflow_id"]),
             )
-            row = connection.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id=?", (row["id"],)
+            ).fetchone()
         return self._row_to_job(row)
 
     def get_job(self, job_id: str) -> JobRecord | None:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
         return self._row_to_job(row) if row else None
 
     def delete_finished_job(self, job_id: str) -> bool | None:
@@ -848,7 +1068,9 @@ class LibraryStorage:
         worker and removing a record it is still updating.
         """
         with self._connect() as connection:
-            row = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
             if not row:
                 return False
             if row["status"] in {"queued", "processing"}:
@@ -886,20 +1108,45 @@ class LibraryStorage:
         return len(rows)
 
     def update_job(self, job_id: str, **changes: Any) -> JobRecord | None:
-        allowed = {"status", "stage", "progress", "position", "attempts", "error", "log_json", "stage_log_json", "requests_planned", "requests_completed", "summary_source", "provider_id", "provider_name", "model", "overrides_json", "execution_state", "waiting_for_json", "priority"}
+        allowed = {
+            "status",
+            "stage",
+            "progress",
+            "position",
+            "attempts",
+            "error",
+            "log_json",
+            "stage_log_json",
+            "requests_planned",
+            "requests_completed",
+            "summary_source",
+            "provider_id",
+            "provider_name",
+            "model",
+            "overrides_json",
+            "execution_state",
+            "waiting_for_json",
+            "priority",
+        }
         columns = []
         values = []
         for key, value in changes.items():
             if key not in allowed:
                 continue
             columns.append(f"{key}=?")
-            values.append(json.dumps(value, ensure_ascii=False) if key.endswith("_json") else value)
+            values.append(
+                json.dumps(value, ensure_ascii=False)
+                if key.endswith("_json")
+                else value
+            )
         if not columns:
             return self.get_job(job_id)
         columns.append("updated_at=?")
         values.extend([utc_now(), job_id])
         with self._connect() as connection:
-            connection.execute(f"UPDATE jobs SET {', '.join(columns)} WHERE id=?", values)
+            connection.execute(
+                f"UPDATE jobs SET {', '.join(columns)} WHERE id=?", values
+            )
         return self.get_job(job_id)
 
     def transition_stage(
@@ -933,12 +1180,20 @@ class LibraryStorage:
             ).fetchone()
             previous_state = row["state"] if row else None
             task_id = row["id"] if row else str(uuid.uuid4())
-            next_progress = progress if progress is not None else (row["progress"] if row else 0)
+            next_progress = (
+                progress if progress is not None else (row["progress"] if row else 0)
+            )
             started_at = row["started_at"] if row else None
             if state == "running" and not started_at:
                 started_at = now
-            finished_at = now if state in {"succeeded", "failed", "cancelled", "skipped"} else None
-            waiting_json = json.dumps(waiting_for, ensure_ascii=False) if waiting_for else None
+            finished_at = (
+                now
+                if state in {"succeeded", "failed", "cancelled", "skipped"}
+                else None
+            )
+            waiting_json = (
+                json.dumps(waiting_for, ensure_ascii=False) if waiting_for else None
+            )
             if row:
                 connection.execute(
                     """UPDATE stage_tasks SET state=?, required=?, progress=?, waiting_for_json=?,
@@ -994,7 +1249,10 @@ class LibraryStorage:
                     state,
                     message,
                     resource_id,
-                    json.dumps({"progress": next_progress, "waiting_for": waiting_for}, ensure_ascii=False),
+                    json.dumps(
+                        {"progress": next_progress, "waiting_for": waiting_for},
+                        ensure_ascii=False,
+                    ),
                     now,
                 ),
             )
@@ -1013,7 +1271,16 @@ class LibraryStorage:
             connection.execute(
                 """UPDATE jobs SET stage=?, execution_state=?, waiting_for_json=?,
                     progress=?, error=?, status=?, updated_at=? WHERE id=?""",
-                (stage, state, waiting_json, next_progress, error, legacy_status, now, job_id),
+                (
+                    stage,
+                    state,
+                    waiting_json,
+                    next_progress,
+                    error,
+                    legacy_status,
+                    now,
+                    job_id,
+                ),
             )
             if state in {"running", "waiting_resource"}:
                 connection.execute(
@@ -1075,7 +1342,9 @@ class LibraryStorage:
                     ),
                 )
 
-    def start_attempt(self, job_id: str, stage: str, resource_id: str, worker_id: str = "local") -> str:
+    def start_attempt(
+        self, job_id: str, stage: str, resource_id: str, worker_id: str = "local"
+    ) -> str:
         job = self.get_job(job_id)
         if not job:
             raise KeyError(f"Job {job_id} not found")
@@ -1085,45 +1354,86 @@ class LibraryStorage:
         attempt_id = str(uuid.uuid4())
         now = utc_now()
         with self._connect() as connection:
-            ordinal = int(connection.execute(
-                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM stage_attempts WHERE stage_task_id=?",
-                (task.id,),
-            ).fetchone()[0])
+            ordinal = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM stage_attempts WHERE stage_task_id=?",
+                    (task.id,),
+                ).fetchone()[0]
+            )
             connection.execute(
                 """INSERT INTO stage_attempts(
                     id, stage_task_id, workflow_id, video_id, ordinal, state,
                     resource_id, worker_id, started_at, heartbeat_at
                 ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)""",
-                (attempt_id, task.id, job.workflow_id, job.video_id, ordinal, resource_id, worker_id, now, now),
+                (
+                    attempt_id,
+                    task.id,
+                    job.workflow_id,
+                    job.video_id,
+                    ordinal,
+                    resource_id,
+                    worker_id,
+                    now,
+                    now,
+                ),
             )
-            connection.execute("UPDATE stage_tasks SET attempt=? WHERE id=?", (ordinal, task.id))
+            connection.execute(
+                "UPDATE stage_tasks SET attempt=? WHERE id=?", (ordinal, task.id)
+            )
         return attempt_id
 
-    def acquire_resource_lease(self, attempt_id: str, resource_id: str, workflow_id: str, video_id: str, expires_at: str) -> str:
+    def acquire_resource_lease(
+        self,
+        attempt_id: str,
+        resource_id: str,
+        workflow_id: str,
+        video_id: str,
+        expires_at: str,
+    ) -> str:
         lease_id = str(uuid.uuid4())
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO resource_leases(
                     id, resource_id, attempt_id, workflow_id, video_id, acquired_at, expires_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (lease_id, resource_id, attempt_id, workflow_id, video_id, utc_now(), expires_at),
+                (
+                    lease_id,
+                    resource_id,
+                    attempt_id,
+                    workflow_id,
+                    video_id,
+                    utc_now(),
+                    expires_at,
+                ),
             )
         return lease_id
 
-    def heartbeat_attempt(self, attempt_id: str, lease_id: str, expires_at: str) -> None:
+    def heartbeat_attempt(
+        self, attempt_id: str, lease_id: str, expires_at: str
+    ) -> None:
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("UPDATE stage_attempts SET heartbeat_at=? WHERE id=? AND state='running'", (now, attempt_id))
-            connection.execute("UPDATE resource_leases SET expires_at=? WHERE id=? AND released_at IS NULL", (expires_at, lease_id))
+            connection.execute(
+                "UPDATE stage_attempts SET heartbeat_at=? WHERE id=? AND state='running'",
+                (now, attempt_id),
+            )
+            connection.execute(
+                "UPDATE resource_leases SET expires_at=? WHERE id=? AND released_at IS NULL",
+                (expires_at, lease_id),
+            )
 
-    def finish_attempt(self, attempt_id: str, lease_id: str, state: str, error: str | None = None) -> None:
+    def finish_attempt(
+        self, attempt_id: str, lease_id: str, state: str, error: str | None = None
+    ) -> None:
         now = utc_now()
         with self._connect() as connection:
             connection.execute(
                 "UPDATE stage_attempts SET state=?, finished_at=?, heartbeat_at=?, error=? WHERE id=?",
                 (state, now, now, error, attempt_id),
             )
-            connection.execute("UPDATE resource_leases SET released_at=? WHERE id=?", (now, lease_id))
+            connection.execute(
+                "UPDATE resource_leases SET released_at=? WHERE id=?", (now, lease_id)
+            )
 
     def list_attempts(self, workflow_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -1141,14 +1451,18 @@ class LibraryStorage:
             ).fetchone()
         return self._row_to_stage_task(row) if row else None
 
-    def list_stage_tasks(self, *, workflow_id: str | None = None, live_only: bool = False) -> list[StageTaskRecord]:
+    def list_stage_tasks(
+        self, *, workflow_id: str | None = None, live_only: bool = False
+    ) -> list[StageTaskRecord]:
         clauses: list[str] = []
         values: list[Any] = []
         if workflow_id:
             clauses.append("workflow_id=?")
             values.append(workflow_id)
         if live_only:
-            clauses.append("state IN ('blocked','queued','waiting_resource','running','retry_scheduled','cancelling','failed')")
+            clauses.append(
+                "state IN ('blocked','queued','waiting_resource','running','retry_scheduled','cancelling','failed')"
+            )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as connection:
             rows = connection.execute(
@@ -1159,10 +1473,14 @@ class LibraryStorage:
 
     def get_workflow(self, workflow_id: str) -> WorkflowRecord | None:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM workflows WHERE id=?", (workflow_id,)
+            ).fetchone()
         return self._row_to_workflow(row) if row else None
 
-    def list_workflows(self, *, video_id: str | None = None, limit: int = 100) -> list[WorkflowRecord]:
+    def list_workflows(
+        self, *, video_id: str | None = None, limit: int = 100
+    ) -> list[WorkflowRecord]:
         if video_id:
             sql = "SELECT * FROM workflows WHERE video_id=? ORDER BY updated_at DESC LIMIT ?"
             values: tuple[Any, ...] = (video_id, limit)
@@ -1173,7 +1491,9 @@ class LibraryStorage:
             rows = connection.execute(sql, values).fetchall()
         return [self._row_to_workflow(row) for row in rows]
 
-    def list_pipeline_events(self, *, after: int = 0, workflow_id: str | None = None, limit: int = 500) -> list[PipelineEventRecord]:
+    def list_pipeline_events(
+        self, *, after: int = 0, workflow_id: str | None = None, limit: int = 500
+    ) -> list[PipelineEventRecord]:
         clauses = ["sequence>?"]
         values: list[Any] = [after]
         if workflow_id:
@@ -1189,7 +1509,11 @@ class LibraryStorage:
 
     def pipeline_cursor(self) -> int:
         with self._connect() as connection:
-            return int(connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM pipeline_events").fetchone()[0])
+            return int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) FROM pipeline_events"
+                ).fetchone()[0]
+            )
 
     def pipeline_aggregates(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -1205,18 +1529,36 @@ class LibraryStorage:
         by_stage: dict[str, dict[str, Any]] = {}
         for row in rows:
             stage = row["stage"].split(":", 1)[0]
-            item = by_stage.setdefault(stage, {"id": stage, "states": {}, "video_ids": []})
-            item["states"][row["state"]] = item["states"].get(row["state"], 0) + row["count"]
+            item = by_stage.setdefault(
+                stage, {"id": stage, "states": {}, "video_ids": []}
+            )
+            item["states"][row["state"]] = (
+                item["states"].get(row["state"], 0) + row["count"]
+            )
         for row in videos:
             stage = row["stage"].split(":", 1)[0]
-            item = by_stage.setdefault(stage, {"id": stage, "states": {}, "video_ids": []})
+            item = by_stage.setdefault(
+                stage, {"id": stage, "states": {}, "video_ids": []}
+            )
             if row["video_id"] not in item["video_ids"] and len(item["video_ids"]) < 12:
                 item["video_ids"].append(row["video_id"])
         for item in by_stage.values():
             states = item["states"]
-            item["count"] = sum(states.get(state, 0) for state in ("blocked", "queued", "waiting_resource", "running", "retry_scheduled", "cancelling"))
+            item["count"] = sum(
+                states.get(state, 0)
+                for state in (
+                    "blocked",
+                    "queued",
+                    "waiting_resource",
+                    "running",
+                    "retry_scheduled",
+                    "cancelling",
+                )
+            )
             item["running"] = states.get("running", 0)
-            item["waiting"] = states.get("waiting_resource", 0) + states.get("retry_scheduled", 0)
+            item["waiting"] = states.get("waiting_resource", 0) + states.get(
+                "retry_scheduled", 0
+            )
             item["queued"] = states.get("queued", 0)
             item["blocked"] = states.get("blocked", 0)
             item["failed"] = states.get("failed", 0)
@@ -1235,7 +1577,9 @@ class LibraryStorage:
             state=row["state"],
             required=bool(row["required"]),
             progress=row["progress"],
-            waiting_for=json.loads(row["waiting_for_json"]) if row["waiting_for_json"] else None,
+            waiting_for=json.loads(row["waiting_for_json"])
+            if row["waiting_for_json"]
+            else None,
             resource_id=row["resource_id"],
             attempt=row["attempt"],
             error=row["error"],
@@ -1280,7 +1624,10 @@ class LibraryStorage:
     def reorder_jobs(self, job_ids: list[str]) -> None:
         with self._connect() as connection:
             for position, job_id in enumerate(job_ids, start=1):
-                connection.execute("UPDATE jobs SET position=?, updated_at=? WHERE id=? AND status='queued'", (position, utc_now(), job_id))
+                connection.execute(
+                    "UPDATE jobs SET position=?, updated_at=? WHERE id=? AND status='queued'",
+                    (position, utc_now(), job_id),
+                )
 
     def write_job_log(self, job: JobRecord) -> None:
         path = self.logs_dir / f"{job.id}.log"
@@ -1301,8 +1648,58 @@ class LibraryStorage:
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> JobRecord:
         keys = set(row.keys())
-        return JobRecord(id=row["id"], video_id=row["video_id"], source_url=row["source_url"], kind=row["kind"], status=row["status"], stage=row["stage"], progress=row["progress"], position=row["position"], attempts=row["attempts"], created_at=row["created_at"], updated_at=row["updated_at"], error=row["error"], log=json.loads(row["log_json"]), stage_log=json.loads(row["stage_log_json"]), requests_planned=row["requests_planned"], requests_completed=row["requests_completed"], summary_source=row["summary_source"], provider_id=row["provider_id"], provider_name=row["provider_name"], model=row["model"], overrides=json.loads(row["overrides_json"]), workflow_id=row["workflow_id"] if "workflow_id" in keys else "", execution_state=row["execution_state"] if "execution_state" in keys else LibraryStorage._execution_state(row["status"]), waiting_for=json.loads(row["waiting_for_json"]) if "waiting_for_json" in keys and row["waiting_for_json"] else None, priority=row["priority"] if "priority" in keys else "normal")
+        return JobRecord(
+            id=row["id"],
+            video_id=row["video_id"],
+            source_url=row["source_url"],
+            kind=row["kind"],
+            status=row["status"],
+            stage=row["stage"],
+            progress=row["progress"],
+            position=row["position"],
+            attempts=row["attempts"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            error=row["error"],
+            log=json.loads(row["log_json"]),
+            stage_log=json.loads(row["stage_log_json"]),
+            requests_planned=row["requests_planned"],
+            requests_completed=row["requests_completed"],
+            summary_source=row["summary_source"],
+            provider_id=row["provider_id"],
+            provider_name=row["provider_name"],
+            model=row["model"],
+            overrides=json.loads(row["overrides_json"]),
+            workflow_id=row["workflow_id"] if "workflow_id" in keys else "",
+            execution_state=row["execution_state"]
+            if "execution_state" in keys
+            else LibraryStorage._execution_state(row["status"]),
+            waiting_for=json.loads(row["waiting_for_json"])
+            if "waiting_for_json" in keys and row["waiting_for_json"]
+            else None,
+            priority=row["priority"] if "priority" in keys else "normal",
+        )
 
     @staticmethod
     def _row_to_meta(row: sqlite3.Row) -> VideoMeta:
-        return VideoMeta(video_id=row["video_id"], source_url=row["source_url"], title=row["title"], channel=row["channel"], published_at=row["published_at"], duration_seconds=row["duration_seconds"], thumbnail_file=row["thumbnail_file"], thumbnail_url=row["thumbnail_url"], added_at=row["added_at"], updated_at=row["updated_at"], status=row["status"], favorite=bool(row["favorite"]), archived=bool(row["archived"]), tags=json.loads(row["tags_json"]), playlists=[PlaylistRef.model_validate(value) for value in json.loads(row["playlists_json"] or "[]")], error=row["error"])
+        return VideoMeta(
+            video_id=row["video_id"],
+            source_url=row["source_url"],
+            title=row["title"],
+            channel=row["channel"],
+            published_at=row["published_at"],
+            duration_seconds=row["duration_seconds"],
+            thumbnail_file=row["thumbnail_file"],
+            thumbnail_url=row["thumbnail_url"],
+            added_at=row["added_at"],
+            updated_at=row["updated_at"],
+            status=row["status"],
+            favorite=bool(row["favorite"]),
+            archived=bool(row["archived"]),
+            tags=json.loads(row["tags_json"]),
+            playlists=[
+                PlaylistRef.model_validate(value)
+                for value in json.loads(row["playlists_json"] or "[]")
+            ],
+            error=row["error"],
+        )

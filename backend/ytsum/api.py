@@ -66,7 +66,9 @@ def schedule_process_signal(pid: int, sig: signal.Signals, delay: float = 0.25) 
 async def lifespan(_: FastAPI):
     app_context = context()
     app_context.storage().rescan()
-    app_context.storage().cleanup_logs(app_context.settings_repo.load().log_retention_days)
+    app_context.storage().cleanup_logs(
+        app_context.settings_repo.load().log_retention_days
+    )
     app_context.queue.start()
     yield
     await app_context.queue.stop()
@@ -86,13 +88,19 @@ app.add_middleware(
 async def health() -> dict:
     settings = context().settings_repo.load()
     native_status = await MeetingTranscriberBridge(settings).health()
-    cookie_file = Path(settings.cookie_file).expanduser() if settings.cookie_file else None
+    cookie_file = (
+        Path(settings.cookie_file).expanduser() if settings.cookie_file else None
+    )
     jobs = context().storage().list_jobs(limit=1_000_000)
 
     def queue_summary(kinds: set[str]) -> dict:
         lane = [job for job in jobs if job.kind in kinds]
         active = [job for job in lane if job.execution_state == "running"]
-        waiting = [job for job in lane if job.execution_state in {"waiting_resource", "retry_scheduled"}]
+        waiting = [
+            job
+            for job in lane
+            if job.execution_state in {"waiting_resource", "retry_scheduled"}
+        ]
         queued = [job for job in lane if job.execution_state == "queued"]
         blocked = [job for job in lane if job.execution_state == "blocked"]
         return {
@@ -109,40 +117,53 @@ async def health() -> dict:
             "current_video_id": active[0].video_id if active else None,
             "current_progress": active[0].progress if active else None,
         }
+
     pipeline = context().storage().pipeline_aggregates()
     for node in pipeline:
         node["processing"] = node["running"]
         node["completed"] = node["succeeded"]
-    resources = [item.model_dump(mode="json") for item in context().queue.resources.snapshots()]
-    for provider, provider_status in zip(settings.providers, ProviderClient.statuses(settings.providers)):
-        resources.append({
-            "id": f"llm:{provider.id}",
-            "label": f"{provider.name} / {provider.model or 'model not selected'}",
-            "capacity": provider.max_in_flight,
-            "in_use": provider_status["in_flight"],
-            "waiting": provider_status["waiting"] + provider_status["token_waiting"] + provider_status["concurrency_waiting"],
-            "health": "degraded" if provider_status["health"] == "cooldown" else provider_status["health"],
-            "owners": [],
-            "requests_per_minute": provider_status["requests_per_minute"],
-            "requests_per_hour": provider_status["requests_per_hour"],
-            "requests_per_day": provider_status["requests_per_day"],
-            "requests_in_window": provider_status["requests_in_window"],
-            "requests_in_hour": provider_status["requests_in_hour"],
-            "requests_in_day": provider_status["requests_in_day"],
-            "request_interval_seconds": provider_status["request_interval_seconds"],
-            "tokens_per_minute": provider_status["tokens_per_minute"],
-            "tokens_per_hour": provider_status["tokens_per_hour"],
-            "tokens_per_day": provider_status["tokens_per_day"],
-            "tokens_in_window": provider_status["tokens_in_window"],
-            "tokens_in_hour": provider_status["tokens_in_hour"],
-            "tokens_in_day": provider_status["tokens_in_day"],
-            "token_retry_after_seconds": provider_status["token_retry_after_seconds"],
-            "retry_after_seconds": provider_status["retry_after_seconds"],
-            "cooldown_seconds": provider_status["cooldown_seconds"],
-            "completed": provider_status["completed"],
-            "failed": provider_status["failed"],
-            "last_error": provider_status["last_error"],
-        })
+    resources = [
+        item.model_dump(mode="json") for item in context().queue.resources.snapshots()
+    ]
+    for provider, provider_status in zip(
+        settings.providers, ProviderClient.statuses(settings.providers)
+    ):
+        resources.append(
+            {
+                "id": f"llm:{provider.id}",
+                "label": f"{provider.name} / {provider.model or 'model not selected'}",
+                "capacity": provider.max_in_flight,
+                "in_use": provider_status["in_flight"],
+                "waiting": provider_status["waiting"]
+                + provider_status["token_waiting"]
+                + provider_status["concurrency_waiting"],
+                "health": "degraded"
+                if provider_status["health"] == "cooldown"
+                else provider_status["health"],
+                "owners": [],
+                "requests_per_minute": provider_status["requests_per_minute"],
+                "requests_per_hour": provider_status["requests_per_hour"],
+                "requests_per_day": provider_status["requests_per_day"],
+                "requests_in_window": provider_status["requests_in_window"],
+                "requests_in_hour": provider_status["requests_in_hour"],
+                "requests_in_day": provider_status["requests_in_day"],
+                "request_interval_seconds": provider_status["request_interval_seconds"],
+                "tokens_per_minute": provider_status["tokens_per_minute"],
+                "tokens_per_hour": provider_status["tokens_per_hour"],
+                "tokens_per_day": provider_status["tokens_per_day"],
+                "tokens_in_window": provider_status["tokens_in_window"],
+                "tokens_in_hour": provider_status["tokens_in_hour"],
+                "tokens_in_day": provider_status["tokens_in_day"],
+                "token_retry_after_seconds": provider_status[
+                    "token_retry_after_seconds"
+                ],
+                "retry_after_seconds": provider_status["retry_after_seconds"],
+                "cooldown_seconds": provider_status["cooldown_seconds"],
+                "completed": provider_status["completed"],
+                "failed": provider_status["failed"],
+                "last_error": provider_status["last_error"],
+            }
+        )
     return {
         "status": "ok",
         "queue_paused": context().queue.paused,
@@ -152,7 +173,10 @@ async def health() -> dict:
             "tts": queue_summary({"tts"}),
         },
         "pipeline": pipeline,
-        "stage_tasks": [item.model_dump(mode="json") for item in context().storage().list_stage_tasks(live_only=True)],
+        "stage_tasks": [
+            item.model_dump(mode="json")
+            for item in context().storage().list_stage_tasks(live_only=True)
+        ],
         "resources": resources,
         "cursor": context().storage().pipeline_cursor(),
         "library": str(context().storage().library_dir),
@@ -160,8 +184,16 @@ async def health() -> dict:
             "yt_dlp": {"ready": True, "version": yt_dlp.version.__version__},
             "ffmpeg": {"ready": shutil.which("ffmpeg") is not None},
             "native_transcriber": {"engine": settings.asr_engine, **native_status},
-            "text_to_speech": {"ready": MacSayTTS(settings).ready(), "engine": settings.tts_engine},
-            "cookies": {"ready": bool((cookie_file and cookie_file.exists()) or settings.cookie_browser), "browser": settings.cookie_browser or None},
+            "text_to_speech": {
+                "ready": MacSayTTS(settings).ready(),
+                "engine": settings.tts_engine,
+            },
+            "cookies": {
+                "ready": bool(
+                    (cookie_file and cookie_file.exists()) or settings.cookie_browser
+                ),
+                "browser": settings.cookie_browser or None,
+            },
         },
     }
 
@@ -172,7 +204,8 @@ async def diagnostics_snapshot() -> dict:
     payload = await health()
     storage = context().storage()
     payload["stage_tasks"] = [
-        item.model_dump(mode="json") for item in storage.list_stage_tasks(live_only=True)
+        item.model_dump(mode="json")
+        for item in storage.list_stage_tasks(live_only=True)
     ]
     payload["workflows"] = [
         item.model_dump(mode="json") for item in storage.list_workflows(limit=200)
@@ -182,7 +215,9 @@ async def diagnostics_snapshot() -> dict:
 
 
 @app.get("/api/diagnostics/events")
-def diagnostics_events(after: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=2000)) -> dict:
+def diagnostics_events(
+    after: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=2000)
+) -> dict:
     storage = context().storage()
     items = storage.list_pipeline_events(after=after, limit=limit)
     return {
@@ -192,7 +227,9 @@ def diagnostics_events(after: int = Query(0, ge=0), limit: int = Query(500, ge=1
 
 
 @app.get("/api/diagnostics/stream")
-async def diagnostics_stream(request: Request, after: int = Query(0, ge=0)) -> StreamingResponse:
+async def diagnostics_stream(
+    request: Request, after: int = Query(0, ge=0)
+) -> StreamingResponse:
     async def events():
         cursor = after
         # Rotate the stream regularly so a graceful application restart never
@@ -208,7 +245,7 @@ async def diagnostics_stream(request: Request, after: int = Query(0, ge=0)) -> S
                     data = json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
                     yield f"id: {cursor}\nevent: pipeline\ndata: {data}\n\n"
             else:
-                yield f"event: heartbeat\ndata: {{\"cursor\": {cursor}}}\n\n"
+                yield f'event: heartbeat\ndata: {{"cursor": {cursor}}}\n\n'
             await asyncio.sleep(1)
 
     return StreamingResponse(
@@ -226,9 +263,17 @@ def get_workflow(workflow_id: str) -> dict:
         raise HTTPException(404, "Workflow not found")
     return {
         "workflow": workflow.model_dump(mode="json"),
-        "tasks": [item.model_dump(mode="json") for item in storage.list_stage_tasks(workflow_id=workflow_id)],
+        "tasks": [
+            item.model_dump(mode="json")
+            for item in storage.list_stage_tasks(workflow_id=workflow_id)
+        ],
         "attempts": storage.list_attempts(workflow_id),
-        "events": [item.model_dump(mode="json") for item in storage.list_pipeline_events(workflow_id=workflow_id, limit=1000)],
+        "events": [
+            item.model_dump(mode="json")
+            for item in storage.list_pipeline_events(
+                workflow_id=workflow_id, limit=1000
+            )
+        ],
     }
 
 
@@ -240,7 +285,13 @@ def list_videos(
     archived: bool = False,
     sort: str = "added_desc",
 ) -> dict:
-    return {"items": context().storage().list_videos(query=query, status=status, favorite=favorite, archived=archived, sort=sort)}
+    return {
+        "items": context()
+        .storage()
+        .list_videos(
+            query=query, status=status, favorite=favorite, archived=archived, sort=sort
+        )
+    }
 
 
 @app.get("/api/playlists")
@@ -258,14 +309,23 @@ async def add_videos(request: AddVideosRequest) -> dict:
         if is_playlist_url(raw_url):
             try:
                 owner_id = f"playlist:{uuid.uuid4()}"
-                async with context().queue.resources.external("yt_dlp", owner_id, "playlist-inventory"):
+                async with context().queue.resources.external(
+                    "yt_dlp", owner_id, "playlist-inventory"
+                ):
                     playlist = await context().queue._thread_call(
                         YouTubeClient(context().settings_repo.load()).extract_playlist,
                         raw_url,
                     )
-                added, already_present = context().storage().import_playlist(
-                    playlist.meta,
-                    [(entry.video_id, entry.source_url, entry.position) for entry in playlist.entries],
+                added, already_present = (
+                    context()
+                    .storage()
+                    .import_playlist(
+                        playlist.meta,
+                        [
+                            (entry.video_id, entry.source_url, entry.position)
+                            for entry in playlist.entries
+                        ],
+                    )
                 )
                 jobs.extend(job.model_dump(mode="json") for job in added)
                 existing.extend(already_present)
@@ -285,7 +345,12 @@ async def add_videos(request: AddVideosRequest) -> dict:
             continue
         context().storage().create_placeholder(video_id, url)
         snapshot = context().settings_repo.load().model_dump(mode="json")
-        jobs.append(context().storage().enqueue(video_id, url, settings_snapshot=snapshot).model_dump(mode="json"))
+        jobs.append(
+            context()
+            .storage()
+            .enqueue(video_id, url, settings_snapshot=snapshot)
+            .model_dump(mode="json")
+        )
     context().queue.notify()
     return {"jobs": jobs, "existing": existing, "errors": errors}
 
@@ -330,15 +395,27 @@ def artifact_folder(video_id: str) -> Path:
 def open_video_folder(video_id: str) -> dict:
     folder = artifact_folder(video_id)
     try:
-        subprocess.run(["open", str(folder)], check=True, capture_output=True, text=True, timeout=15)
+        subprocess.run(
+            ["open", str(folder)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
     except (OSError, subprocess.SubprocessError) as error:
-        raise HTTPException(502, "Could not open the artifacts folder in Finder") from error
+        raise HTTPException(
+            502, "Could not open the artifacts folder in Finder"
+        ) from error
     return {"opened": True}
 
 
 @app.patch("/api/videos/{video_id}")
 def patch_video(video_id: str, request: UpdateVideoRequest) -> dict:
-    meta = context().storage().patch_video(video_id, request.favorite, request.tags, request.archived)
+    meta = (
+        context()
+        .storage()
+        .patch_video(video_id, request.favorite, request.tags, request.archived)
+    )
     if not meta:
         raise HTTPException(404, "Video not found")
     return meta.model_dump(mode="json")
@@ -349,10 +426,14 @@ def refresh_video(video_id: str) -> dict:
     detail = context().storage().get_video(video_id)
     if not detail:
         raise HTTPException(404, "Video not found")
-    job, created = context().storage().enqueue_refresh(
-        video_id,
-        detail.meta.source_url,
-        settings_snapshot=context().settings_repo.load().model_dump(mode="json"),
+    job, created = (
+        context()
+        .storage()
+        .enqueue_refresh(
+            video_id,
+            detail.meta.source_url,
+            settings_snapshot=context().settings_repo.load().model_dump(mode="json"),
+        )
     )
     context().storage().mark_video_for_refresh(video_id)
     if created:
@@ -365,8 +446,20 @@ def create_summary(video_id: str, request: CreateSummaryRequest) -> dict:
     detail = context().storage().get_video(video_id)
     if not detail or not detail.transcript_markdown:
         raise HTTPException(409, "Transcript is not ready")
-    overrides = {key: value for key, value in request.model_dump().items() if value is not None}
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="summarize", overrides=overrides, settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
+    overrides = {
+        key: value for key, value in request.model_dump().items() if value is not None
+    }
+    job = (
+        context()
+        .storage()
+        .enqueue(
+            video_id,
+            detail.meta.source_url,
+            kind="summarize",
+            overrides=overrides,
+            settings_snapshot=context().settings_repo.load().model_dump(mode="json"),
+        )
+    )
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -376,10 +469,25 @@ def create_prompt(video_id: str, request: CreatePromptRequest) -> dict:
     detail = context().storage().get_video(video_id)
     if not detail or not detail.transcript_markdown:
         raise HTTPException(409, "Transcript is not ready")
-    if not any(item.id == request.template_id for item in context().settings_repo.load().templates):
+    if not any(
+        item.id == request.template_id
+        for item in context().settings_repo.load().templates
+    ):
         raise HTTPException(404, "Prompt template not found")
-    overrides = {key: value for key, value in request.model_dump().items() if value is not None}
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="prompt", overrides=overrides, settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
+    overrides = {
+        key: value for key, value in request.model_dump().items() if value is not None
+    }
+    job = (
+        context()
+        .storage()
+        .enqueue(
+            video_id,
+            detail.meta.source_url,
+            kind="prompt",
+            overrides=overrides,
+            settings_snapshot=context().settings_repo.load().model_dump(mode="json"),
+        )
+    )
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -398,10 +506,24 @@ def create_speech(video_id: str, request: CreateSpeechRequest) -> dict:
     detail = context().storage().get_video(video_id)
     if not detail:
         raise HTTPException(404, "Video not found")
-    markdown = detail.transcript_markdown if request.artifact == "transcript" else detail.summary_markdown
+    markdown = (
+        detail.transcript_markdown
+        if request.artifact == "transcript"
+        else detail.summary_markdown
+    )
     if not markdown.strip():
         raise HTTPException(409, f"{request.artifact.capitalize()} is not ready")
-    job = context().storage().enqueue(video_id, detail.meta.source_url, kind="tts", overrides={"artifact": request.artifact}, settings_snapshot=context().settings_repo.load().model_dump(mode="json"))
+    job = (
+        context()
+        .storage()
+        .enqueue(
+            video_id,
+            detail.meta.source_url,
+            kind="tts",
+            overrides={"artifact": request.artifact},
+            settings_snapshot=context().settings_repo.load().model_dump(mode="json"),
+        )
+    )
     context().queue.notify()
     return job.model_dump(mode="json")
 
@@ -413,7 +535,10 @@ def get_speech(video_id: str, artifact: str):
     detail = context().storage().get_video(video_id)
     if not detail or not detail.folder:
         raise HTTPException(404, "Audio not found")
-    item = next((item for item in detail.meta.audio_artifacts if item.artifact == artifact), None)
+    item = next(
+        (item for item in detail.meta.audio_artifacts if item.artifact == artifact),
+        None,
+    )
     if not item:
         raise HTTPException(404, "Audio not found")
     path = Path(detail.folder) / item.file
@@ -434,7 +559,12 @@ def list_jobs() -> dict:
     items = [job.model_dump(mode="json") for job in context().storage().list_jobs()]
     download = [item for item in items if item["kind"] in {"process", "refresh"}]
     llm = [item for item in items if item["kind"] in {"summarize", "prompt", "tts"}]
-    return {"paused": context().queue.paused, "items": items, "download_items": download, "llm_items": llm}
+    return {
+        "paused": context().queue.paused,
+        "items": items,
+        "download_items": download,
+        "llm_items": llm,
+    }
 
 
 @app.delete("/api/jobs")
@@ -483,9 +613,16 @@ def cancel_job(job_id: str) -> dict:
     if not job:
         raise HTTPException(404, "Job not found")
     if job.status not in {"queued", "processing"}:
-        return {"cancelled": False, "status": job.status, "message": "Job is already terminal"}
+        return {
+            "cancelled": False,
+            "status": job.status,
+            "message": "Job is already terminal",
+        }
     context().queue.cancel(job_id)
-    return {"cancelled": True, "status": "cancelling" if job.status == "processing" else "cancelled"}
+    return {
+        "cancelled": True,
+        "status": "cancelling" if job.status == "processing" else "cancelled",
+    }
 
 
 @app.post("/api/jobs/{job_id}/retry", status_code=202)
@@ -495,13 +632,17 @@ def retry_job(job_id: str) -> dict:
         raise HTTPException(404, "Job not found")
     if previous.status not in {"attention", "cancelled"}:
         raise HTTPException(409, "Only failed or cancelled jobs can be retried")
-    job = context().storage().enqueue(
-        previous.video_id,
-        previous.source_url,
-        kind=previous.kind,
-        overrides=previous.overrides,
-        workflow_id=previous.workflow_id,
-        priority=previous.priority,
+    job = (
+        context()
+        .storage()
+        .enqueue(
+            previous.video_id,
+            previous.source_url,
+            kind=previous.kind,
+            overrides=previous.overrides,
+            workflow_id=previous.workflow_id,
+            priority=previous.priority,
+        )
     )
     context().queue.notify()
     return job.model_dump(mode="json")
@@ -528,7 +669,14 @@ def put_settings(settings: AppSettings) -> dict:
 
 @app.post("/api/providers/{provider_id}/secret")
 def save_provider_secret(provider_id: str, request: ProviderSecretRequest) -> dict:
-    provider = next((item for item in context().settings_repo.load().providers if item.id == provider_id), None)
+    provider = next(
+        (
+            item
+            for item in context().settings_repo.load().providers
+            if item.id == provider_id
+        ),
+        None,
+    )
     if not provider:
         raise HTTPException(404, "Provider not found")
     set_secret(provider_id, request.api_key)
@@ -537,7 +685,14 @@ def save_provider_secret(provider_id: str, request: ProviderSecretRequest) -> di
 
 @app.post("/api/providers/{provider_id}/models")
 async def provider_models(provider_id: str) -> dict:
-    provider = next((item for item in context().settings_repo.load().providers if item.id == provider_id), None)
+    provider = next(
+        (
+            item
+            for item in context().settings_repo.load().providers
+            if item.id == provider_id
+        ),
+        None,
+    )
     if not provider:
         raise HTTPException(404, "Provider not found")
     try:
@@ -572,7 +727,11 @@ async def update_yt_dlp() -> dict:
     result = await asyncio.to_thread(install)
     if result.returncode != 0:
         raise HTTPException(500, (result.stderr or result.stdout)[-1500:])
-    return {"updated": True, "restart_required": True, "message": (result.stdout or "yt-dlp updated")[-1000:]}
+    return {
+        "updated": True,
+        "restart_required": True,
+        "message": (result.stdout or "yt-dlp updated")[-1000:],
+    }
 
 
 @app.get("/api/system/source-update")
@@ -594,15 +753,24 @@ async def pull_source() -> dict:
 @app.post("/api/system/restart")
 async def restart_application() -> dict:
     if os.environ.get("YTSUM_RESTART_ALLOWED") != "1":
-        raise HTTPException(409, "Restart is available only when the app is started with scripts/dev.sh.")
+        raise HTTPException(
+            409,
+            "Restart is available only when the app is started with scripts/dev.sh.",
+        )
     schedule_process_signal(os.getpid(), signal.SIGTERM)
-    return {"restarting": True, "message": "The API is stopping now; its supervisor will start it again."}
+    return {
+        "restarting": True,
+        "message": "The API is stopping now; its supervisor will start it again.",
+    }
 
 
 @app.post("/api/system/shutdown")
 async def shutdown_application() -> dict:
     if os.environ.get("YTSUM_SHUTDOWN_ALLOWED") != "1":
-        raise HTTPException(409, "Shutdown is available only when the app is started with scripts/dev.sh.")
+        raise HTTPException(
+            409,
+            "Shutdown is available only when the app is started with scripts/dev.sh.",
+        )
     supervisor_pid = int(os.environ.get("YTSUM_SUPERVISOR_PID") or os.getpid())
     schedule_process_signal(supervisor_pid, signal.SIGTERM)
     return {"shutting_down": True, "message": "The local application is stopping now."}

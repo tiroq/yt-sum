@@ -22,9 +22,13 @@ def _git(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
             timeout=timeout,
         )
     except FileNotFoundError as error:
-        raise GitUpdateError("Git is not installed or is unavailable to the application.") from error
+        raise GitUpdateError(
+            "Git is not installed or is unavailable to the application."
+        ) from error
     except subprocess.TimeoutExpired as error:
-        raise GitUpdateError("Git did not finish in time. Check your network connection and try again.") from error
+        raise GitUpdateError(
+            "Git did not finish in time. Check your network connection and try again."
+        ) from error
 
 
 def _failure(result: subprocess.CompletedProcess[str], fallback: str) -> str:
@@ -34,7 +38,10 @@ def _failure(result: subprocess.CompletedProcess[str], fallback: str) -> str:
 def _repository_ready() -> tuple[bool, str | None]:
     result = _git("rev-parse", "--is-inside-work-tree")
     if result.returncode != 0 or result.stdout.strip() != "true":
-        return False, "This installation is not a Git working tree, so source updates are unavailable."
+        return (
+            False,
+            "This installation is not a Git working tree, so source updates are unavailable.",
+        )
     return True, None
 
 
@@ -55,11 +62,15 @@ def source_update_status(fetch: bool = True) -> dict:
 
     status = _git("status", "--porcelain=v1")
     if status.returncode != 0:
-        raise GitUpdateError(_failure(status, "Could not inspect the Git working tree."))
+        raise GitUpdateError(
+            _failure(status, "Could not inspect the Git working tree.")
+        )
     clean = not status.stdout.strip()
     branch_result = _git("branch", "--show-current")
     branch = branch_result.stdout.strip() or "detached HEAD"
-    upstream_result = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    upstream_result = _git(
+        "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"
+    )
     if upstream_result.returncode != 0:
         return {
             "available": True,
@@ -81,7 +92,9 @@ def source_update_status(fetch: bool = True) -> dict:
 
     counts = _git("rev-list", "--left-right", "--count", f"HEAD...{upstream}")
     if counts.returncode != 0:
-        raise GitUpdateError(_failure(counts, "Could not compare this branch with its upstream."))
+        raise GitUpdateError(
+            _failure(counts, "Could not compare this branch with its upstream.")
+        )
     ahead, behind = (int(value) for value in counts.stdout.split())
     if not clean:
         diagnostic = "Local changes detected. Source updates are blocked until the working tree is clean."
@@ -111,7 +124,9 @@ def pull_source_update() -> dict:
     if not status["available"]:
         raise GitUpdateError(status["diagnostic"])
     if not status["clean"]:
-        raise GitUpdateError("Local changes detected. Commit, stash, or discard them before updating.")
+        raise GitUpdateError(
+            "Local changes detected. Commit, stash, or discard them before updating."
+        )
     if not status["upstream"]:
         raise GitUpdateError("This branch has no upstream remote.")
     if not status["behind"]:
@@ -119,5 +134,11 @@ def pull_source_update() -> dict:
 
     result = _git("pull", "--ff-only", timeout=180)
     if result.returncode != 0:
-        raise GitUpdateError(_failure(result, "git pull failed; no restart was performed."))
-    return {**source_update_status(fetch=False), "updated": True, "restart_required": True}
+        raise GitUpdateError(
+            _failure(result, "git pull failed; no restart was performed.")
+        )
+    return {
+        **source_update_status(fetch=False),
+        "updated": True,
+        "restart_required": True,
+    }
