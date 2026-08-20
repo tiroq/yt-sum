@@ -17,6 +17,7 @@ test("add-video dialog returns focus to its opener so it can be opened again", (
 });
 
 test("queue panel closes when clicking outside its panel", () => {
-  assert.match(page, /queue-backdrop.*onClick=\{close\}/s);
-  assert.match(page, /queue-panel[^\n]*onClick=\{\(event\) => event\.stopPropagation\(\)\}/s);
+  assert.match(page, /<button[^\n]*className="queue-backdrop"[^\n]*onClick={handleBackdropClick}/s);
+  assert.match(page, /const handleBackdropClick.*\.closest\("\.queue-panel"\)/s);
+  assert.match(page, /<aside[^\n]*className="queue-panel"/s);
 });
