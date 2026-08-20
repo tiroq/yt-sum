@@ -320,6 +320,55 @@ def test_refresh_is_idempotent_and_clears_attention_status(monkeypatch, tmp_path
         assert active[0]["kind"] == "refresh"
 
 
+def test_retry_reuses_failed_summary_job_and_reopens_the_failed_stage(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    from ytsum import api
+    from ytsum.models import utc_now
+
+    api._context = None
+    with TestClient(api.app) as client:
+        client.post("/api/jobs/pause")
+        storage = api.context().storage()
+        now = utc_now()
+        with storage._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO workflows(id, video_id, kind, status, priority, settings_snapshot_json, created_at, updated_at) VALUES (?, ?, ?, 'waiting', 'normal', '{}', ?, ?)",
+                ("workflow-summary-retry", "Gn64NNr3bqU", "summarize", now, now),
+            )
+        job = storage.enqueue(
+            "Gn64NNr3bqU",
+            "https://youtu.be/Gn64NNr3bqU",
+            kind="summarize",
+            workflow_id="workflow-summary-retry",
+        )
+        storage.transition_stage(
+            job.id,
+            "summarizing",
+            "failed",
+            progress=0.8,
+            message="Summary failed",
+            error="Summary failed",
+        )
+        storage.update_job(
+            job.id,
+            status="attention",
+            stage="summarizing",
+            execution_state="failed",
+            error="Summary failed",
+        )
+
+        retry = client.post(f"/api/jobs/{job.id}/retry")
+
+        assert retry.status_code == 202
+        assert retry.json()["id"] == job.id
+        assert retry.json()["status"] == "queued"
+        assert retry.json()["execution_state"] == "queued"
+        assert retry.json()["stage"] == "summarizing"
+        assert len(client.get("/api/jobs").json()["items"]) == 1
+        assert storage.get_stage_task(job.workflow_id, "summarizing").state == "queued"
+
+
 def test_local_api_opens_only_artifact_folders_inside_the_library(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))

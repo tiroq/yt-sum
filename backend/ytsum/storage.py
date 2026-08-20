@@ -865,9 +865,10 @@ class LibraryStorage:
             next_position = connection.execute(
                 "SELECT COALESCE(MAX(position), 0) + 1 FROM jobs WHERE status='queued'"
             ).fetchone()[0]
+            effective_workflow_id = workflow_id or str(uuid.uuid4())
             job = JobRecord(
                 id=str(uuid.uuid4()),
-                workflow_id=workflow_id or str(uuid.uuid4()),
+                workflow_id=effective_workflow_id,
                 video_id=video_id,
                 source_url=source_url,
                 kind=kind,
@@ -875,7 +876,10 @@ class LibraryStorage:
                 overrides=overrides or {},
                 priority=priority,  # type: ignore[arg-type]
             )
-            if not workflow_id:
+            if not connection.execute(
+                "SELECT 1 FROM workflows WHERE id=?",
+                (effective_workflow_id,),
+            ).fetchone():
                 self._insert_workflow(connection, job, settings_snapshot or {})
             self._insert_job(connection, job)
             self._insert_initial_stage(connection, job)
@@ -1106,6 +1110,57 @@ class LibraryStorage:
         for row in rows:
             (self.logs_dir / f"{row['id']}.log").unlink(missing_ok=True)
         return len(rows)
+
+    def retry_job(self, job_id: str) -> JobRecord | None:
+        """Re-open the same job and the last failed stage without creating a duplicate queue row."""
+        job = self.get_job(job_id)
+        if not job or job.status not in {"attention", "cancelled"}:
+            return None
+        now = utc_now()
+        with self._connect() as connection:
+            stage_rows = connection.execute(
+                "SELECT * FROM stage_tasks WHERE workflow_id=? AND state IN ('failed','cancelled','skipped') ORDER BY updated_at DESC",
+                (job.workflow_id,),
+            ).fetchall()
+            retry_stage = stage_rows[0]["stage"] if stage_rows else "queued"
+            connection.execute(
+                """UPDATE jobs SET status='queued', stage=?, progress=0,
+                    execution_state='queued', waiting_for_json=NULL, error=NULL,
+                    updated_at=? WHERE id=?""",
+                (retry_stage, now, job_id),
+            )
+            connection.execute(
+                "UPDATE workflows SET status='waiting', updated_at=? WHERE id=?",
+                (now, job.workflow_id),
+            )
+            if stage_rows:
+                for row in stage_rows:
+                    connection.execute(
+                        """UPDATE stage_tasks SET state='queued', waiting_for_json=NULL,
+                            resource_id=NULL, error=NULL, started_at=NULL, finished_at=NULL,
+                            updated_at=?, progress=0 WHERE id=?""",
+                        (now, row["id"]),
+                    )
+                    connection.execute(
+                        """INSERT INTO pipeline_events(
+                            workflow_id, stage_task_id, video_id, stage, event, from_state,
+                            to_state, message, created_at
+                        ) VALUES (?, ?, ?, ?, 'retry', ?, 'queued', 'Retrying failed stage task', ?)""",
+                        (
+                            job.workflow_id,
+                            row["id"],
+                            row["video_id"],
+                            row["stage"],
+                            row["state"],
+                            now,
+                        ),
+                    )
+            else:
+                connection.execute(
+                    "UPDATE stage_tasks SET state='queued', waiting_for_json=NULL, resource_id=NULL, error=NULL, started_at=NULL, finished_at=NULL, updated_at=?, progress=0 WHERE workflow_id=? AND stage='queued'",
+                    (now, job.workflow_id),
+                )
+        return self.get_job(job_id)
 
     def update_job(self, job_id: str, **changes: Any) -> JobRecord | None:
         allowed = {

@@ -632,18 +632,9 @@ def retry_job(job_id: str) -> dict:
         raise HTTPException(404, "Job not found")
     if previous.status not in {"attention", "cancelled"}:
         raise HTTPException(409, "Only failed or cancelled jobs can be retried")
-    job = (
-        context()
-        .storage()
-        .enqueue(
-            previous.video_id,
-            previous.source_url,
-            kind=previous.kind,
-            overrides=previous.overrides,
-            workflow_id=previous.workflow_id,
-            priority=previous.priority,
-        )
-    )
+    job = context().storage().retry_job(job_id)
+    if job is None:
+        raise HTTPException(409, "Job retry is unavailable")
     context().queue.notify()
     return job.model_dump(mode="json")
 
