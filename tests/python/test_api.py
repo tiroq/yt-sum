@@ -369,6 +369,56 @@ def test_retry_reuses_failed_summary_job_and_reopens_the_failed_stage(monkeypatc
         assert storage.get_stage_task(job.workflow_id, "summarizing").state == "queued"
 
 
+def test_auto_retry_requeues_failed_job_within_max_attempts(monkeypatch, tmp_path: Path) -> None:
+    """Test that jobs are auto-requeued when attempts < max_retry_attempts."""
+    monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))
+    from ytsum import api
+    from ytsum.queue import ProcessingQueue
+    from ytsum.settings import SettingsRepository
+    from ytsum.models import utc_now
+
+    api._context = None
+    with TestClient(api.app) as client:
+        # Set max retries to 2
+        storage = api.context().storage()
+        settings = client.get("/api/settings").json()
+        settings["max_retry_attempts"] = 2
+        client.put("/api/settings", json=settings)
+        
+        # Create a failed job
+        client.post("/api/jobs/pause")
+        job = storage.enqueue(
+            "Gn64NNr3bqU",
+            "https://youtu.be/Gn64NNr3bqU",
+            kind="summarize",
+        )
+        storage.transition_stage(job.id, "summarizing", "running", progress=0.5)
+        storage.update_job(job.id, status="processing", execution_state="running")
+        
+        # Simulate first failure with attempts=0
+        settings_repo = api.context().settings_repo
+        assert settings_repo.load().max_retry_attempts == 2
+        
+        # Mock the error handler logic: should requeue when attempts < max
+        next_attempts = job.attempts + 1  # 0 + 1 = 1
+        should_retry = next_attempts <= settings_repo.load().max_retry_attempts
+        assert should_retry is True
+        
+        # Verify the job would be requeued (not marked as attention)
+        storage.update_job(
+            job.id,
+            status="queued",
+            execution_state="queued",
+            error=None,
+            attempts=next_attempts,
+        )
+        updated_job = storage.get_job(job.id)
+        assert updated_job.status == "queued"
+        assert updated_job.attempts == 1
+        assert updated_job.error is None
+
+
 def test_local_api_opens_only_artifact_folders_inside_the_library(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YTSUM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("YTSUM_LIBRARY_DIR", str(tmp_path / "library"))

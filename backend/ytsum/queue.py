@@ -486,18 +486,43 @@ class ProcessingQueue:
                     message=str(error),
                     error=str(error),
                 )
-            self.storage.update_job(
-                job.id,
-                status="attention",
-                execution_state="failed",
-                error=str(error),
-                attempts=job.attempts + 1,
+            next_attempts = job.attempts + 1
+            should_retry = (
+                next_attempts <= settings.max_retry_attempts
+                and job.kind in {"process", "refresh", "summarize", "prompt", "tts"}
             )
-            self._log(
-                job,
-                f"[ERROR] Job updated with status=attention, attempts={job.attempts + 1}",
-            )
-            self.storage.finish_workflow(job.id, "attention")
+            if should_retry:
+                self._log(
+                    job,
+                    f"[ERROR] Auto-retrying job: attempts {next_attempts}/{settings.max_retry_attempts}",
+                )
+                self.storage.update_job(
+                    job.id,
+                    status="queued",
+                    execution_state="queued",
+                    error=None,
+                    attempts=next_attempts,
+                )
+                self.storage.finish_workflow(job.id, "queued")
+                self.notify()
+                self._log(job, f"[ERROR] Job re-queued for retry")
+            else:
+                self._log(
+                    job,
+                    f"[ERROR] Job requires attention (attempts exceeded: {next_attempts})",
+                )
+                self.storage.update_job(
+                    job.id,
+                    status="attention",
+                    execution_state="failed",
+                    error=str(error),
+                    attempts=next_attempts,
+                )
+                self._log(
+                    job,
+                    f"[ERROR] Job updated with status=attention, attempts={next_attempts}",
+                )
+                self.storage.finish_workflow(job.id, "attention")
             detail = self.storage.get_video(job.video_id)
             if detail and detail.folder:
                 self._log(

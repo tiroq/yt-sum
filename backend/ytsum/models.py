@@ -150,6 +150,7 @@ class AppSettings(BaseModel):
     min_download_delay_seconds: int = Field(default=30, ge=0, le=3600)
     max_download_delay_seconds: int = Field(default=90, ge=0, le=3600)
     max_download_retries: int = Field(default=5, ge=0, le=20)
+    max_retry_attempts: int = Field(default=3, ge=0, le=10)
     cookie_file: str = ""
     cookie_browser: str = ""
     active_provider_id: str = "ollama"
