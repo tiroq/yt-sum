@@ -13,6 +13,8 @@ This folder is the planning area for future implementation work in YT Sum.
 - [library-search-and-filters.md](library-search-and-filters.md)
 - [pipeline-diagnostics-dashboard.md](pipeline-diagnostics-dashboard.md)
 - [browser-extension-queue-reliability.md](browser-extension-queue-reliability.md)
+- [redesign-prompts-tabs.md](redesign-prompts-tabs.md)
+- [facts-checking-prompt.md](facts-checking-prompt.md)
 
 ## Naming convention
 
