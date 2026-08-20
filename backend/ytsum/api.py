@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import shutil
 import os
 import signal
@@ -9,6 +10,7 @@ import sys
 import asyncio
 import json
 import uuid
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -37,12 +39,53 @@ from .transcriber import MeetingTranscriberBridge
 from .tts import MacSayTTS
 
 
+def _setup_logging() -> logging.Logger:
+    """Setup console and file logging for the API."""
+    # Get or create logger
+    logger = logging.getLogger("ytsum.api")
+    logger.setLevel(logging.DEBUG)
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    console_handler.setFormatter(console_formatter)
+
+    # File handler with rotation - logs directory will be created by LibraryStorage
+    # Default to temp directory for early startup
+    logs_dir = Path.home() / "Library" / "Application Support" / "YTSum" / ".yt-sum" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = logs_dir / "api.log"
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,  # Keep 5 backups
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s:%(funcName)s:%(lineno)d - %(message)s"
+    )
+    file_handler.setFormatter(file_formatter)
+
+    # Remove existing handlers and add new ones
+    logger.handlers.clear()
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    logger.propagate = False
+
+    return logger
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     force=True,
 )
-logger = logging.getLogger("ytsum.api")
+logger = _setup_logging()
 
 _context: ApplicationContext | None = None
 
@@ -62,19 +105,88 @@ def schedule_process_signal(pid: int, sig: signal.Signals, delay: float = 0.25) 
     asyncio.create_task(signal_after_response())
 
 
+class LoggingMiddleware:
+    """Middleware to log all API requests and responses."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
+        start_time = time.time()
+        request_id = str(uuid.uuid4())[:8]
+
+        # Log request
+        logger.info(
+            f"[{request_id}] {request.method} {request.url.path} - "
+            f"Query: {dict(request.query_params) if request.query_params else 'None'}"
+        )
+
+        async def send_with_logging(message):
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                duration = time.time() - start_time
+
+                # Log based on status code
+                if status_code >= 500:
+                    logger.error(
+                        f"[{request_id}] {request.method} {request.url.path} - "
+                        f"Status: {status_code} (took {duration:.2f}s)"
+                    )
+                elif status_code >= 400:
+                    logger.warning(
+                        f"[{request_id}] {request.method} {request.url.path} - "
+                        f"Status: {status_code} (took {duration:.2f}s)"
+                    )
+                elif duration > 30:
+                    logger.warning(
+                        f"[{request_id}] {request.method} {request.url.path} - "
+                        f"Status: {status_code} (SLOW: {duration:.2f}s)"
+                    )
+                else:
+                    logger.info(
+                        f"[{request_id}] {request.method} {request.url.path} - "
+                        f"Status: {status_code} (took {duration:.2f}s)"
+                    )
+
+            await send(message)
+
+        await self.app(scope, receive, send_with_logging)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     app_context = context()
-    app_context.storage().rescan()
-    app_context.storage().cleanup_logs(
-        app_context.settings_repo.load().log_retention_days
-    )
-    app_context.queue.start()
+    logger.info("API server starting up...")
+    try:
+        app_context.storage().rescan()
+        logger.debug("Library storage rescanned")
+        app_context.storage().cleanup_logs(
+            app_context.settings_repo.load().log_retention_days
+        )
+        logger.debug("Cleanup logs completed")
+        app_context.queue.start()
+        logger.info("Job queue started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start API: {e}", exc_info=True)
+        raise
+
     yield
-    await app_context.queue.stop()
+
+    logger.info("API server shutting down...")
+    try:
+        await app_context.queue.stop()
+        logger.info("Job queue stopped successfully")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}", exc_info=True)
 
 
 app = FastAPI(title="YT Sum Local API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(LoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
@@ -82,6 +194,20 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Log all unhandled exceptions."""
+    request_id = str(uuid.uuid4())[:8]
+    logger.exception(
+        f"[{request_id}] Unhandled exception in {request.method} {request.url.path}: {type(exc).__name__}",
+        exc_info=exc,
+    )
+    return {
+        "detail": "Internal server error",
+        "request_id": request_id,
+    }
 
 
 @app.get("/api/health")
