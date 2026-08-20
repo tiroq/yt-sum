@@ -15,6 +15,7 @@ This folder is the planning area for future implementation work in YT Sum.
 - [browser-extension-queue-reliability.md](browser-extension-queue-reliability.md)
 - [redesign-prompts-tabs.md](redesign-prompts-tabs.md)
 - [facts-checking-prompt.md](facts-checking-prompt.md)
+- [telegram-connector.md](telegram-connector.md)
 
 ## Naming convention
 
