@@ -13,10 +13,11 @@ Add a Telegram connector that can:
 - list videos
 - archive a video
 - delete a video from the app without deleting local data
+- restrict bot use to an admin allowlist of authorized Telegram users
 
 ## Problem Statement
 
-The app currently focuses on local-first library management and browser-based workflows, but it does not yet provide a Telegram interface for remote tasking and summary delivery. This creates friction for users who want to enqueue videos and receive processed results through Telegram while keeping local artifacts on disk.
+The app currently focuses on local-first library management and browser-based workflows, but it does not yet provide a Telegram interface for remote tasking and summary delivery. This creates friction for users who want to enqueue videos and receive processed results through Telegram while keeping local artifacts on disk. The bot also needs explicit user authorization so it is only usable by approved admins.
 
 ## Repository Evidence
 
@@ -43,6 +44,8 @@ The app supports local library management and processing workflows, but there is
 - the bot can list available videos in the library
 - the bot can archive a video without removing local stored data
 - the bot can delete a video from the app while leaving local data untouched
+- only Telegram users on the configured admin allowlist can interact with the bot
+- unauthorized users receive a clear rejection message and no command execution
 
 ## Scope
 
@@ -50,6 +53,7 @@ The app supports local library management and processing workflows, but there is
 - integration with existing queue and library APIs
 - summary delivery back to Telegram
 - archive/delete flows on app-managed metadata only
+- admin allowlist configuration and enforcement
 
 ## Implementation Constraints
 
@@ -57,6 +61,8 @@ The app supports local library management and processing workflows, but there is
 - do not delete local library data when the app-level delete command is used
 - preserve existing local API and storage contracts unless updated by design
 - ensure the Telegram integration is loopback-safe and does not create remote storage requirements
+- admin access must be explicit and enforced before any command executes
+- configuration for allowed Telegram user IDs should be stored locally and not exposed as a public remote setting
 
 ## Suggested Implementation Approach
 
@@ -74,11 +80,14 @@ The app supports local library management and processing workflows, but there is
 - a list command returns videos available in the app
 - archive and delete commands are both supported with correct semantics
 - deleting from the app does not delete the underlying local data on disk
+- only approved Telegram user IDs can use the bot
+- unauthorized users are rejected with a clear message and no action is taken
 
 ## Test Requirements
 
 - add tests for Telegram command mapping to app actions
 - verify archive/delete semantics against local library data and app metadata
+- add tests that reject unauthorized Telegram users before commands are executed
 - run relevant Python API and storage tests for the managing commands
 
 ## Edge Cases
@@ -88,6 +97,8 @@ The app supports local library management and processing workflows, but there is
 - archive/delete request for a non-existent video
 - list command when the library is empty
 - bot command rate limits or failed backend calls
+- user not on the allowlist
+- allowlist empty or misconfigured
 
 ## Non-Goals
 
@@ -100,3 +111,4 @@ The app supports local library management and processing workflows, but there is
 - should archive mean “hide from app view” or “mark as inactive but keep local file data”? 
 - should delete in Telegram only remove the app record while preserving filesystem artifacts?
 - do we want commands for summary-only retrieval, or should all results be sent automatically after processing?
+- where should the authorized Telegram user IDs be stored: app config, environment file, or local settings?
