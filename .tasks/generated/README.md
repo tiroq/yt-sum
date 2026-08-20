@@ -18,6 +18,7 @@ This folder is the planning area for future implementation work in YT Sum.
 - [telegram-connector.md](telegram-connector.md)
 - [telegram-bot-usage-limits.md](telegram-bot-usage-limits.md)
 - [automated-video-categorization.md](automated-video-categorization.md)
+- [compact-stage-journal.md](compact-stage-journal.md)
 
 ## Naming convention
 
