@@ -21,6 +21,7 @@ This folder is the planning area for future implementation work in YT Sum.
 - [compact-stage-journal.md](compact-stage-journal.md)
 - [custom-fields-provider-routing.md](custom-fields-provider-routing.md)
 - [markdown-summary-rendering.md](markdown-summary-rendering.md)
+- [split-page-view-components.md](split-page-view-components.md)
 
 ## Naming convention
 
