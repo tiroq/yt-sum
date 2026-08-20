@@ -129,3 +129,11 @@ prepare-release version:
     just version-set "{{version}}"
     just release-notes "{{version}}"
     @printf 'Prepared local release v%s. Review the diff, commit it, then tag/push manually.\n' "{{version}}"
+
+# Tag and complete a release. Assumes docs/releases/v<version>.md exists and all changes are committed.
+release version:
+    @[[ "{{version}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || { echo "Expected a SemVer version, got: {{version}}" >&2; exit 2; }
+    @test -e "docs/releases/v{{version}}.md" || { echo "Release notes not found: docs/releases/v{{version}}.md" >&2; exit 1; }
+    @git diff --quiet && git diff --cached --quiet || { echo "Working tree is not clean; commit all changes first." >&2; exit 1; }
+    @git tag -a "v{{version}}" -m "Release v{{version}}"
+    @printf 'Tagged v%s. Push with: git push origin v%s\n' "{{version}}" "{{version}}"
